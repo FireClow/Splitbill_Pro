@@ -1,0 +1,46 @@
+# Virtual environments
+.venv_37/
+.venv_run/
+venv/
+env/
+
+# Node modules
+node_modules/
+build/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+*.log
+
+# System
+.DS_Store
+Thumbs.db
+
+# MongoDB
+.mongodb/
+*.pid
+
+# Build outputs
+*.apk
+*.ipa
+.metro-cache/
+.expo/
+.cache/

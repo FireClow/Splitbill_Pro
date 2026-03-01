@@ -1,0 +1,1165 @@
+from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends, Query, File, UploadFile, Form
+from dotenv import load_dotenv
+from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+import os
+import logging
+import json
+import uuid
+import secrets
+import time
+import hashlib
+import httpx
+from pathlib import Path
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal, ROUND_HALF_UP
+from collections import defaultdict
+from receipt_processor import ReceiptParser, OCREngine, OCRError
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
+# MongoDB connection
+mongo_url = os.environ['MONGO_URL']
+client = AsyncIOMotorClient(mongo_url)
+db = client[os.environ['DB_NAME']]
+
+app = FastAPI(title="SplitBill Pro API", version="2.0.0")
+api_router = APIRouter(prefix="/api")
+
+# ─── STRUCTURED LOGGING ───────────────────────────────────────────
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "correlation_id": getattr(record, "correlation_id", None),
+        }
+        if record.exc_info and record.exc_info[0]:
+            log_data["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_data)
+
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+logger = logging.getLogger("splitbill")
+logger.handlers = [handler]
+logger.setLevel(logging.INFO)
+
+# ─── RATE LIMITING (In-Memory) ─────────────────────────────────────
+
+class RateLimiter:
+    def __init__(self):
+        self.requests: Dict[str, list] = defaultdict(list)
+        self.limits = {
+            "default": (60, 60),      # 60 requests per 60 seconds
+            "auth": (10, 60),          # 10 auth attempts per 60 seconds
+            "create": (20, 60),        # 20 creates per 60 seconds
+        }
+
+    def is_allowed(self, key: str, category: str = "default") -> bool:
+        max_requests, window = self.limits.get(category, self.limits["default"])
+        now = time.time()
+        self.requests[key] = [t for t in self.requests[key] if now - t < window]
+        if len(self.requests[key]) >= max_requests:
+            return False
+        self.requests[key].append(now)
+        return True
+
+rate_limiter = RateLimiter()
+
+# ─── MIDDLEWARE ────────────────────────────────────────────────────
+
+class CorrelationIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        correlation_id = request.headers.get("X-Correlation-ID", str(uuid.uuid4()))
+        request.state.correlation_id = correlation_id
+        response = await call_next(request)
+        response.headers["X-Correlation-ID"] = correlation_id
+        return response
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        client_ip = request.client.host if request.client else "unknown"
+        path = request.url.path
+        category = "default"
+        if "/auth/" in path:
+            category = "auth"
+        elif request.method == "POST" and "/bills" in path:
+            category = "create"
+        if not rate_limiter.is_allowed(f"{client_ip}:{category}", category):
+            return Response(
+                content=json.dumps({"detail": "Rate limit exceeded. Try again later."}),
+                status_code=429,
+                media_type="application/json",
+            )
+        return await call_next(request)
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start = time.time()
+        response = await call_next(request)
+        duration_ms = round((time.time() - start) * 1000, 2)
+        cid = getattr(request.state, "correlation_id", "N/A")
+        logger.info(
+            f"{request.method} {request.url.path} → {response.status_code} ({duration_ms}ms)",
+            extra={"correlation_id": cid},
+        )
+        return response
+
+# ─── PYDANTIC MODELS (HARDENED) ────────────────────────────────────
+
+class UserOut(BaseModel):
+    user_id: str
+    email: str
+    name: str
+    picture: Optional[str] = None
+    plan: str = "free"
+    created_at: Optional[str] = None
+
+class SessionExchange(BaseModel):
+    session_id: str
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, v: str) -> str:
+        if not v or len(v) < 5:
+            raise ValueError("Invalid session_id")
+        return v.strip()
+
+class BillItemCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    price: float = Field(gt=0, le=1000000)
+    quantity: int = Field(ge=1, le=1000, default=1)
+    assigned_to: List[str] = []
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, v: str) -> str:
+        return v.strip()
+
+class BillItemUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    price: Optional[float] = Field(None, gt=0, le=1000000)
+    quantity: Optional[int] = Field(None, ge=1, le=1000)
+    assigned_to: Optional[List[str]] = None
+
+class ParticipantCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    contact_info: Optional[str] = ""
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, v: str) -> str:
+        return v.strip()
+
+class BillCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    converted_currency: Optional[str] = None
+    items: List[BillItemCreate] = []
+    participants: List[ParticipantCreate] = []
+    tax_type: str = "percentage"
+    tax_value: float = Field(default=0, ge=0, le=100000)
+    service_charge: float = Field(default=0, ge=0, le=100000)
+    additional_fees: List[Dict[str, Any]] = []
+    split_method: str = "equal"
+    @field_validator("title")
+    @classmethod
+    def clean_title(cls, v: str) -> str:
+        return v.strip()
+    @field_validator("split_method")
+    @classmethod
+    def validate_split(cls, v: str) -> str:
+        if v not in ("equal", "per_item", "percentage", "custom"):
+            raise ValueError("Invalid split method")
+        return v
+    @field_validator("tax_type")
+    @classmethod
+    def validate_tax_type(cls, v: str) -> str:
+        if v not in ("percentage", "fixed"):
+            raise ValueError("Invalid tax type")
+        return v
+
+class BillUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    currency: Optional[str] = None
+    converted_currency: Optional[str] = None
+    tax_type: Optional[str] = None
+    tax_value: Optional[float] = Field(None, ge=0)
+    service_charge: Optional[float] = Field(None, ge=0)
+    additional_fees: Optional[List[Dict[str, Any]]] = None
+    split_method: Optional[str] = None
+
+class PaymentUpdate(BaseModel):
+    amount_paid: float = Field(ge=0)
+    status: str = "paid"
+    idempotency_key: Optional[str] = None
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: str) -> str:
+        if v not in ("unpaid", "partial", "paid"):
+            raise ValueError("Invalid payment status")
+        return v
+
+class SplitRequest(BaseModel):
+    method: str = "equal"
+    custom_splits: Optional[Dict[str, float]] = None
+    percentages: Optional[Dict[str, float]] = None
+
+class ShareLinkCreate(BaseModel):
+    expires_hours: int = Field(default=72, ge=1, le=720)
+    public_access: bool = True
+
+class SubscriptionUpdate(BaseModel):
+    plan: str
+    @field_validator("plan")
+    @classmethod
+    def validate_plan(cls, v: str) -> str:
+        if v not in ("free", "pro"):
+            raise ValueError("Invalid plan. Must be 'free' or 'pro'")
+        return v
+
+class ReceiptItem(BaseModel):
+    name: str
+    quantity: int = 1
+    price: float
+
+class ReceiptScanResult(BaseModel):
+    currency: str
+    items: List[ReceiptItem]
+    subtotal: float
+    tax: float
+    service_charge: float
+    total: float
+    confidence: float  # 0-1 confidence score
+
+# ─── PLAN LIMITS ───────────────────────────────────────────────────
+
+PLAN_LIMITS = {
+    "free": {"max_active_bills": 5, "ocr": False, "export": False, "analytics": False},
+    "pro": {"max_active_bills": 999999, "ocr": True, "export": True, "analytics": True},
+}
+
+# ─── AUTH & FEATURE GATE HELPERS ───────────────────────────────────
+
+async def get_current_user(request: Request) -> dict:
+    token = None
+    cookie_token = request.cookies.get("session_token")
+    if cookie_token:
+        token = cookie_token
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    expires_at = session.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Session expired")
+    # Refresh token if expiring within 24 hours
+    if expires_at - datetime.now(timezone.utc) < timedelta(hours=24):
+        new_expiry = datetime.now(timezone.utc) + timedelta(days=7)
+        await db.user_sessions.update_one(
+            {"session_token": token},
+            {"$set": {"expires_at": new_expiry}}
+        )
+    user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+async def require_pro(user: dict = Depends(get_current_user)) -> dict:
+    if user.get("plan", "free") != "pro":
+        raise HTTPException(status_code=403, detail="Pro plan required. Upgrade to access this feature.")
+    return user
+
+async def check_bill_limit(user: dict) -> None:
+    plan = user.get("plan", "free")
+    limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["free"])
+    active_count = await db.bills.count_documents({"owner_id": user["user_id"], "status": "active"})
+    if active_count >= limits["max_active_bills"]:
+        raise HTTPException(status_code=403, detail=f"Active bill limit reached ({limits['max_active_bills']}). Upgrade to Pro for unlimited bills.")
+
+async def log_audit(user_id: str, action: str, entity: str, entity_id: str, details: str = ""):
+    await db.audit_logs.insert_one({
+        "log_id": f"log_{uuid.uuid4().hex[:12]}",
+        "user_id": user_id,
+        "action": action,
+        "entity": entity,
+        "entity_id": entity_id,
+        "details": details,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+
+# ─── SPLIT CALCULATION ENGINE ─────────────────────────────────────
+
+def calculate_splits(bill: dict, method: str = "equal", custom_splits: dict = None, percentages: dict = None) -> list:
+    participants = bill.get("participants", [])
+    if not participants:
+        return []
+    total = Decimal(str(bill.get("total_amount", 0)))
+    items = bill.get("items", [])
+    splits = []
+
+    if method == "equal":
+        n = len(participants)
+        base = (total / n).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        remainder = total - (base * n)
+        remainder_cents = int(remainder / Decimal("0.01"))
+        for i, p in enumerate(participants):
+            amount = base + (Decimal("0.01") if i < abs(remainder_cents) else Decimal("0"))
+            existing = next((s for s in bill.get("splits", []) if s["participant_id"] == p["participant_id"]), None)
+            splits.append({
+                "participant_id": p["participant_id"],
+                "participant_name": p["name"],
+                "amount_due": float(amount),
+                "amount_paid": existing["amount_paid"] if existing else 0,
+                "status": existing["status"] if existing else "unpaid"
+            })
+
+    elif method == "per_item":
+        participant_totals = {p["participant_id"]: Decimal("0") for p in participants}
+        unassigned_total = Decimal("0")
+        for item in items:
+            item_total = Decimal(str(item["price"])) * Decimal(str(item["quantity"]))
+            assigned = item.get("assigned_to", [])
+            if assigned:
+                share = (item_total / len(assigned)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                for pid in assigned:
+                    if pid in participant_totals:
+                        participant_totals[pid] += share
+            else:
+                unassigned_total += item_total
+        if unassigned_total > 0 and participants:
+            share = (unassigned_total / len(participants)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            for pid in participant_totals:
+                participant_totals[pid] += share
+        subtotal = sum(participant_totals.values())
+        if subtotal > 0:
+            extras = total - Decimal(str(bill.get("subtotal", 0)))
+            for pid in participant_totals:
+                ratio = participant_totals[pid] / subtotal
+                participant_totals[pid] += (extras * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        for p in participants:
+            existing = next((s for s in bill.get("splits", []) if s["participant_id"] == p["participant_id"]), None)
+            splits.append({
+                "participant_id": p["participant_id"],
+                "participant_name": p["name"],
+                "amount_due": float(participant_totals.get(p["participant_id"], Decimal("0"))),
+                "amount_paid": existing["amount_paid"] if existing else 0,
+                "status": existing["status"] if existing else "unpaid"
+            })
+
+    elif method == "percentage" and percentages:
+        for p in participants:
+            pct = Decimal(str(percentages.get(p["participant_id"], 0)))
+            amount = (total * pct / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            existing = next((s for s in bill.get("splits", []) if s["participant_id"] == p["participant_id"]), None)
+            splits.append({
+                "participant_id": p["participant_id"],
+                "participant_name": p["name"],
+                "amount_due": float(amount),
+                "amount_paid": existing["amount_paid"] if existing else 0,
+                "status": existing["status"] if existing else "unpaid"
+            })
+
+    elif method == "custom" and custom_splits:
+        for p in participants:
+            amount = float(custom_splits.get(p["participant_id"], 0))
+            existing = next((s for s in bill.get("splits", []) if s["participant_id"] == p["participant_id"]), None)
+            splits.append({
+                "participant_id": p["participant_id"],
+                "participant_name": p["name"],
+                "amount_due": max(amount, 0),
+                "amount_paid": existing["amount_paid"] if existing else 0,
+                "status": existing["status"] if existing else "unpaid"
+            })
+    else:
+        return calculate_splits(bill, "equal")
+    return splits
+
+def compute_bill_totals(bill: dict) -> dict:
+    items = bill.get("items", [])
+    subtotal = sum(Decimal(str(i["price"])) * Decimal(str(i["quantity"])) for i in items)
+    tax_type = bill.get("tax_type", "percentage")
+    tax_value = Decimal(str(bill.get("tax_value", 0)))
+    if tax_type == "percentage":
+        tax_amount = (subtotal * tax_value / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    else:
+        tax_amount = tax_value
+    service_charge = Decimal(str(bill.get("service_charge", 0)))
+    additional = sum(Decimal(str(f.get("amount", 0))) for f in bill.get("additional_fees", []))
+    total = subtotal + tax_amount + service_charge + additional
+    total = max(total, Decimal("0"))  # Prevent negative totals
+    return {
+        "subtotal": float(subtotal.quantize(Decimal("0.01"))),
+        "tax_amount": float(tax_amount.quantize(Decimal("0.01"))),
+        "total_amount": float(total.quantize(Decimal("0.01")))
+    }
+
+# ─── AUTH ENDPOINTS ────────────────────────────────────────────────
+
+@api_router.post("/auth/session")
+async def exchange_session(data: SessionExchange, response: Response):
+    session_hash = hashlib.sha256(data.session_id.encode("utf-8")).hexdigest()
+    identity = session_hash[:12]
+    email = f"user_{identity}@splitbill.local"
+    name = f"User {identity[:6]}"
+    picture = ""
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one({"email": email}, {"$set": {"name": name, "picture": picture, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id, "email": email, "name": name, "picture": picture,
+            "plan": "free",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        })
+
+    session_token = f"st_{secrets.token_hex(32)}"
+    await db.user_sessions.insert_one({
+        "session_token": session_token, "user_id": user_id,
+        "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    response.set_cookie(key="session_token", value=session_token, httponly=True, secure=True, samesite="none", path="/", max_age=7 * 24 * 3600)
+    await log_audit(user_id, "login", "user", user_id)
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    return {"session_token": session_token, "user": {k: user_doc.get(k) for k in ["user_id", "email", "name", "picture", "plan"]}}
+
+@api_router.get("/auth/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    return UserOut(**{k: user.get(k) for k in ["user_id", "email", "name", "picture", "plan", "created_at"] if k in user})
+
+@api_router.post("/auth/logout")
+async def logout(request: Request, response: Response):
+    token = request.cookies.get("session_token")
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    if token:
+        await db.user_sessions.delete_one({"session_token": token})
+    response.delete_cookie("session_token", path="/")
+    return {"message": "Logged out"}
+
+# ─── SUBSCRIPTION ENDPOINTS ───────────────────────────────────────
+
+@api_router.get("/subscription")
+async def get_subscription(user: dict = Depends(get_current_user)):
+    plan = user.get("plan", "free")
+    limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["free"])
+    active_count = await db.bills.count_documents({"owner_id": user["user_id"], "status": "active"})
+    sub = await db.subscriptions.find_one({"user_id": user["user_id"], "status": "active"}, {"_id": 0})
+    return {
+        "plan": plan,
+        "limits": limits,
+        "active_bills": active_count,
+        "subscription": sub,
+        "pricing": {"pro": {"amount": 4.99, "currency": "USD", "interval": "month"}}
+    }
+
+@api_router.post("/subscription/upgrade")
+async def upgrade_subscription(data: SubscriptionUpdate, user: dict = Depends(get_current_user)):
+    if data.plan == "pro":
+        sub_id = f"sub_{uuid.uuid4().hex[:12]}"
+        subscription = {
+            "subscription_id": sub_id,
+            "user_id": user["user_id"],
+            "plan": "pro",
+            "status": "active",
+            "amount": 4.99,
+            "currency": "USD",
+            "interval": "month",
+            "payment_method": "pending_integration",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.subscriptions.update_one(
+            {"user_id": user["user_id"]}, {"$set": subscription}, upsert=True
+        )
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"plan": "pro", "updated_at": datetime.now(timezone.utc).isoformat()}})
+        await log_audit(user["user_id"], "upgrade_plan", "subscription", sub_id, "pro")
+        return {"message": "Upgraded to Pro", "plan": "pro", "subscription_id": sub_id}
+    else:
+        await db.subscriptions.update_one(
+            {"user_id": user["user_id"]}, {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"plan": "free", "updated_at": datetime.now(timezone.utc).isoformat()}})
+        await log_audit(user["user_id"], "downgrade_plan", "subscription", user["user_id"], "free")
+        return {"message": "Downgraded to Free", "plan": "free"}
+
+@api_router.get("/subscription/features")
+async def get_features():
+    return {
+        "plans": {
+            "free": {
+                "name": "Free", "price": 0, "features": [
+                    "Up to 5 active bills", "Equal & per-item splitting",
+                    "Multi-currency support", "Bill sharing via links",
+                    "Payment tracking"
+                ],
+                "limits": PLAN_LIMITS["free"]
+            },
+            "pro": {
+                "name": "Pro", "price": 4.99, "interval": "month", "features": [
+                    "Unlimited active bills", "All split methods",
+                    "OCR receipt scanning", "PDF & Excel export",
+                    "Analytics dashboard", "Priority support",
+                    "Group spending insights"
+                ],
+                "limits": PLAN_LIMITS["pro"]
+            }
+        }
+    }
+
+# ─── BILLS ENDPOINTS (with pagination) ────────────────────────────
+
+@api_router.post("/bills")
+async def create_bill(data: BillCreate, user: dict = Depends(get_current_user)):
+    await check_bill_limit(user)
+    bill_id = f"bill_{uuid.uuid4().hex[:12]}"
+    owner_part_id = f"part_{uuid.uuid4().hex[:12]}"
+    participants = [{"participant_id": owner_part_id, "name": user["name"], "contact_info": user.get("email", ""), "is_owner": True}]
+    for p in data.participants:
+        participants.append({"participant_id": f"part_{uuid.uuid4().hex[:12]}", "name": p.name, "contact_info": p.contact_info or "", "is_owner": False})
+    items = []
+    for item in data.items:
+        items.append({"item_id": f"item_{uuid.uuid4().hex[:12]}", "name": item.name, "price": item.price, "quantity": item.quantity, "assigned_to": item.assigned_to})
+    bill = {
+        "bill_id": bill_id, "owner_id": user["user_id"], "title": data.title, "currency": data.currency.upper(),
+        "converted_currency": data.converted_currency, "exchange_rate": None, "exchange_rate_locked": False,
+        "items": items, "participants": participants,
+        "tax_type": data.tax_type, "tax_value": data.tax_value, "service_charge": data.service_charge,
+        "additional_fees": [dict(f) for f in data.additional_fees],
+        "split_method": data.split_method, "splits": [], "status": "active",
+        "created_at": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    totals = compute_bill_totals(bill)
+    bill.update(totals)
+    bill["splits"] = calculate_splits(bill, data.split_method)
+    await db.bills.insert_one(bill)
+    await log_audit(user["user_id"], "create_bill", "bill", bill_id)
+    return await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+
+@api_router.get("/bills")
+async def get_bills(
+    user: dict = Depends(get_current_user),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+):
+    query: Dict[str, Any] = {"$or": [
+        {"owner_id": user["user_id"]},
+        {"participants.contact_info": user.get("email", "")}
+    ]}
+    if status and status in ("active", "settled", "archived"):
+        query["status"] = status
+    if search:
+        query["title"] = {"$regex": search, "$options": "i"}
+    total_count = await db.bills.count_documents(query)
+    bills = await db.bills.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    return {"bills": bills, "total": total_count, "skip": skip, "limit": limit}
+
+@api_router.get("/bills/{bill_id}")
+async def get_bill(bill_id: str, user: dict = Depends(get_current_user)):
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    return bill
+
+@api_router.put("/bills/{bill_id}")
+async def update_bill(bill_id: str, data: BillUpdate, user: dict = Depends(get_current_user)):
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    if bill["owner_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    updates = {k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None}
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    bill.update(updates)
+    totals = compute_bill_totals(bill)
+    updates.update(totals)
+    bill.update(totals)
+    updates["splits"] = calculate_splits(bill, bill.get("split_method", "equal"))
+    await db.bills.update_one({"bill_id": bill_id}, {"$set": updates})
+    await log_audit(user["user_id"], "update_bill", "bill", bill_id)
+    return await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+
+@api_router.delete("/bills/{bill_id}")
+async def delete_bill(bill_id: str, user: dict = Depends(get_current_user)):
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    if bill["owner_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    await db.bills.delete_one({"bill_id": bill_id})
+    await db.share_links.delete_many({"bill_id": bill_id})
+    await log_audit(user["user_id"], "delete_bill", "bill", bill_id)
+    return {"message": "Bill deleted"}
+
+# ─── BILL ITEMS ────────────────────────────────────────────────────
+
+@api_router.post("/bills/{bill_id}/items")
+async def add_item(bill_id: str, data: BillItemCreate, user: dict = Depends(get_current_user)):
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    item = {"item_id": f"item_{uuid.uuid4().hex[:12]}", "name": data.name, "price": data.price, "quantity": data.quantity, "assigned_to": data.assigned_to}
+    bill["items"].append(item)
+    totals = compute_bill_totals(bill)
+    bill.update(totals)
+    splits = calculate_splits(bill, bill.get("split_method", "equal"))
+    await db.bills.update_one({"bill_id": bill_id}, {"$push": {"items": item}, "$set": {**totals, "splits": splits, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    await log_audit(user["user_id"], "add_item", "bill", bill_id, item["name"])
+    return await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+
+@api_router.put("/bills/{bill_id}/items/{item_id}")
+async def update_item(bill_id: str, item_id: str, data: BillItemUpdate, user: dict = Depends(get_current_user)):
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    items = bill.get("items", [])
+    for i, item in enumerate(items):
+        if item["item_id"] == item_id:
+            for k, v in data.model_dump(exclude_unset=True).items():
+                if v is not None:
+                    items[i][k] = v
+            break
+    bill["items"] = items
+    totals = compute_bill_totals(bill)
+    bill.update(totals)
+    splits = calculate_splits(bill, bill.get("split_method", "equal"))
+    await db.bills.update_one({"bill_id": bill_id}, {"$set": {"items": items, **totals, "splits": splits, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+
+@api_router.delete("/bills/{bill_id}/items/{item_id}")
+async def delete_item(bill_id: str, item_id: str, user: dict = Depends(get_current_user)):
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    items = [i for i in bill.get("items", []) if i["item_id"] != item_id]
+    bill["items"] = items
+    totals = compute_bill_totals(bill)
+    bill.update(totals)
+    splits = calculate_splits(bill, bill.get("split_method", "equal"))
+    await db.bills.update_one({"bill_id": bill_id}, {"$set": {"items": items, **totals, "splits": splits, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+
+# ─── PARTICIPANTS ──────────────────────────────────────────────────
+
+@api_router.post("/bills/{bill_id}/participants")
+async def add_participant(bill_id: str, data: ParticipantCreate, user: dict = Depends(get_current_user)):
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    participant = {"participant_id": f"part_{uuid.uuid4().hex[:12]}", "name": data.name, "contact_info": data.contact_info or "", "is_owner": False}
+    bill["participants"].append(participant)
+    splits = calculate_splits(bill, bill.get("split_method", "equal"))
+    await db.bills.update_one({"bill_id": bill_id}, {"$push": {"participants": participant}, "$set": {"splits": splits, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    await log_audit(user["user_id"], "add_participant", "bill", bill_id, data.name)
+    return await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+
+@api_router.delete("/bills/{bill_id}/participants/{participant_id}")
+async def remove_participant(bill_id: str, participant_id: str, user: dict = Depends(get_current_user)):
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    bill["participants"] = [p for p in bill["participants"] if p["participant_id"] != participant_id]
+    for item in bill["items"]:
+        item["assigned_to"] = [pid for pid in item.get("assigned_to", []) if pid != participant_id]
+    totals = compute_bill_totals(bill)
+    bill.update(totals)
+    splits = calculate_splits(bill, bill.get("split_method", "equal"))
+    await db.bills.update_one({"bill_id": bill_id}, {"$set": {"participants": bill["participants"], "items": bill["items"], **totals, "splits": splits, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+
+# ─── SPLITS ────────────────────────────────────────────────────────
+
+@api_router.post("/bills/{bill_id}/split")
+async def recalculate_split(bill_id: str, data: SplitRequest, user: dict = Depends(get_current_user)):
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    splits = calculate_splits(bill, data.method, data.custom_splits, data.percentages)
+    await db.bills.update_one({"bill_id": bill_id}, {"$set": {"splits": splits, "split_method": data.method, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+
+# ─── PAYMENTS (with idempotency) ──────────────────────────────────
+
+@api_router.put("/bills/{bill_id}/payments/{participant_id}")
+async def update_payment(bill_id: str, participant_id: str, data: PaymentUpdate, user: dict = Depends(get_current_user)):
+    # Idempotency check
+    if data.idempotency_key:
+        existing_op = await db.idempotency_keys.find_one({"key": data.idempotency_key}, {"_id": 0})
+        if existing_op:
+            return await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    splits = bill.get("splits", [])
+    for s in splits:
+        if s["participant_id"] == participant_id:
+            s["amount_paid"] = data.amount_paid
+            s["status"] = data.status
+            break
+    all_paid = all(s["status"] == "paid" for s in splits)
+    bill_status = "settled" if all_paid and splits else "active"
+    await db.bills.update_one({"bill_id": bill_id}, {"$set": {"splits": splits, "status": bill_status, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    if data.idempotency_key:
+        await db.idempotency_keys.insert_one({"key": data.idempotency_key, "bill_id": bill_id, "created_at": datetime.now(timezone.utc).isoformat()})
+    await log_audit(user["user_id"], "update_payment", "bill", bill_id, f"participant={participant_id},status={data.status}")
+    return await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+
+# ─── EXCHANGE RATES ────────────────────────────────────────────────
+
+@api_router.get("/exchange-rates")
+async def get_exchange_rate(base: str = "USD", target: str = "EUR"):
+    cached = await db.exchange_rates.find_one({"base_currency": base.upper(), "target_currency": target.upper()}, {"_id": 0})
+    if cached:
+        fetched_at = cached.get("fetched_at", "")
+        if isinstance(fetched_at, str):
+            try:
+                fetched_time = datetime.fromisoformat(fetched_at)
+            except (ValueError, TypeError):
+                fetched_time = datetime.min
+        else:
+            fetched_time = fetched_at
+        if fetched_time.tzinfo is None:
+            fetched_time = fetched_time.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - fetched_time < timedelta(hours=1):
+            return cached
+    try:
+        async with httpx.AsyncClient() as hc:
+            resp = await hc.get(f"https://api.frankfurter.dev/v1/latest?from={base.upper()}&to={target.upper()}", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            rate = data.get("rates", {}).get(target.upper(), 1.0)
+            rate_doc = {"base_currency": base.upper(), "target_currency": target.upper(), "rate": rate, "fetched_at": datetime.now(timezone.utc).isoformat()}
+            await db.exchange_rates.update_one({"base_currency": base.upper(), "target_currency": target.upper()}, {"$set": rate_doc}, upsert=True)
+            return rate_doc
+    except Exception as e:
+        logger.error(f"Exchange rate fetch error: {e}")
+    if cached:
+        return cached
+    return {"base_currency": base.upper(), "target_currency": target.upper(), "rate": 1.0, "fetched_at": datetime.now(timezone.utc).isoformat()}
+
+@api_router.get("/currencies")
+async def get_currencies():
+    return {"currencies": ["USD","EUR","GBP","JPY","AUD","CAD","CHF","CNY","INR","SGD","HKD","NZD","KRW","MXN","BRL","ZAR","SEK","NOK","DKK","THB","IDR","MYR","PHP","TWD","TRY","PLN","CZK","HUF","ILS","AED"]}
+
+# ─── SHARE LINKS ───────────────────────────────────────────────────
+
+@api_router.post("/bills/{bill_id}/share")
+async def create_share_link(bill_id: str, data: ShareLinkCreate, user: dict = Depends(get_current_user)):
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    existing = await db.share_links.find_one({"bill_id": bill_id}, {"_id": 0})
+    if existing:
+        return existing
+    token = secrets.token_urlsafe(32)
+    link = {"link_id": f"link_{uuid.uuid4().hex[:12]}", "bill_id": bill_id, "token": token, "expires_at": (datetime.now(timezone.utc) + timedelta(hours=data.expires_hours)).isoformat(), "public_access": data.public_access, "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.share_links.insert_one(link)
+    await log_audit(user["user_id"], "create_share_link", "bill", bill_id)
+    link.pop("_id", None)
+    return link
+
+@api_router.get("/share/{token}")
+async def view_shared_bill(token: str):
+    link = await db.share_links.find_one({"token": token}, {"_id": 0})
+    if not link:
+        raise HTTPException(status_code=404, detail="Share link not found")
+    expires_at = link.get("expires_at", "")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=410, detail="Share link expired")
+    bill = await db.bills.find_one({"bill_id": link["bill_id"]}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    return bill
+
+# ─── DASHBOARD STATS ──────────────────────────────────────────────
+
+@api_router.get("/dashboard/stats")
+async def get_dashboard_stats(user: dict = Depends(get_current_user)):
+    bills = await db.bills.find({"owner_id": user["user_id"]}, {"_id": 0}).to_list(1000)
+    total_bills = len(bills)
+    active_bills = sum(1 for b in bills if b.get("status") == "active")
+    settled_bills = sum(1 for b in bills if b.get("status") == "settled")
+    total_amount = sum(b.get("total_amount", 0) for b in bills)
+    total_owed = sum(s.get("amount_due", 0) for b in bills for s in b.get("splits", []))
+    total_paid = sum(s.get("amount_paid", 0) for b in bills for s in b.get("splits", []))
+    return {
+        "total_bills": total_bills, "active_bills": active_bills, "settled_bills": settled_bills,
+        "total_amount": round(total_amount, 2), "total_owed": round(total_owed, 2),
+        "total_paid": round(total_paid, 2), "outstanding": round(total_owed - total_paid, 2),
+        "plan": user.get("plan", "free")
+    }
+
+# ─── ANALYTICS ENDPOINTS (Pro-gated) ──────────────────────────────
+
+@api_router.get("/analytics/spending")
+async def analytics_spending(user: dict = Depends(get_current_user), months: int = Query(6, ge=1, le=24)):
+    plan = user.get("plan", "free")
+    is_pro = plan == "pro"
+    bills = await db.bills.find({"owner_id": user["user_id"]}, {"_id": 0}).to_list(5000)
+    monthly = defaultdict(float)
+    for b in bills:
+        created = b.get("created_at", "")
+        if isinstance(created, str) and len(created) >= 7:
+            month_key = created[:7]
+            monthly[month_key] += b.get("total_amount", 0)
+    sorted_months = sorted(monthly.items(), reverse=True)[:months]
+    result = [{"month": m, "total": round(t, 2)} for m, t in sorted_months]
+    if not is_pro and len(result) > 2:
+        result = result[:2] + [{"month": r["month"], "total": None, "locked": True} for r in result[2:]]
+    return {"spending": result, "is_pro": is_pro}
+
+@api_router.get("/analytics/currencies")
+async def analytics_currencies(user: dict = Depends(get_current_user)):
+    plan = user.get("plan", "free")
+    bills = await db.bills.find({"owner_id": user["user_id"]}, {"_id": 0, "currency": 1, "total_amount": 1}).to_list(5000)
+    currency_totals: Dict[str, float] = defaultdict(float)
+    for b in bills:
+        currency_totals[b.get("currency", "USD")] += b.get("total_amount", 0)
+    result = [{"currency": c, "total": round(t, 2)} for c, t in sorted(currency_totals.items(), key=lambda x: -x[1])]
+    return {"currencies": result, "is_pro": plan == "pro"}
+
+@api_router.get("/analytics/summary")
+async def analytics_summary(user: dict = Depends(get_current_user)):
+    bills = await db.bills.find({"owner_id": user["user_id"]}, {"_id": 0}).to_list(5000)
+    total_spent = sum(b.get("total_amount", 0) for b in bills)
+    avg_bill = total_spent / len(bills) if bills else 0
+    total_participants = sum(len(b.get("participants", [])) for b in bills)
+    top_currencies = defaultdict(int)
+    for b in bills:
+        top_currencies[b.get("currency", "USD")] += 1
+    most_used_currency = max(top_currencies, key=top_currencies.get) if top_currencies else "USD"
+    return {
+        "total_spent": round(total_spent, 2),
+        "total_bills": len(bills),
+        "average_bill": round(avg_bill, 2),
+        "total_participants": total_participants,
+        "most_used_currency": most_used_currency,
+        "plan": user.get("plan", "free")
+    }
+
+# ─── RECEIPT SCANNING (OCR) ───────────────────────────────────────
+
+@api_router.post("/ocr/scan-receipt")
+async def scan_receipt(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user)
+):
+    """
+    Scan receipt image and extract items, prices, tax, total.
+    
+    Supports:
+    - JPEG and PNG formats
+    - Indonesian and English receipts
+    - Multiple currency detection
+    - Auto item/price extraction
+    
+    Returns structured receipt data ready for bill creation.
+    """
+    try:
+        # Validate file exists and has content
+        if not file or not file.filename:
+            raise HTTPException(status_code=400, detail="No file provided")
+        
+        # Log file info
+        logger.info(f"[OCR] Received file: {file.filename}, content_type: {file.content_type}")
+        
+        # Read image bytes first
+        image_bytes = await file.read()
+        if not image_bytes or len(image_bytes) == 0:
+            raise HTTPException(status_code=400, detail="File is empty")
+        
+        # Validate file size
+        if len(image_bytes) > 10 * 1024 * 1024:  # 10MB limit
+            raise HTTPException(status_code=400, detail="Image too large (max 10MB)")
+        
+        # Validate file type by content or extension
+        file_ext = str(file.filename).lower().split('.')[-1] if file.filename else ''
+        content_type = file.content_type or f"image/{file_ext}"
+        
+        # Allow more flexible content type checking
+        if file_ext not in ['jpg', 'jpeg', 'png'] and content_type not in ["image/jpeg", "image/png", "image/jpg"]:
+            raise HTTPException(status_code=400, detail=f"Only JPEG and PNG images are supported (got: {file_ext})")
+        
+        # Extract text from image
+        logger.info(f"[OCR] Scanning receipt for user {user['user_id']}, size: {len(image_bytes)} bytes")
+        ocr_text = OCREngine.extract_text_from_image(image_bytes)
+        logger.info(f"[OCR] Extracted {len(ocr_text)} characters of text")
+        
+        # Parse receipt
+        parsed = ReceiptParser.parse_receipt(ocr_text)
+        
+        # Save image for attachment
+        temp_image_id = f"receipt_{uuid.uuid4().hex[:12]}.png"
+        await db.receipt_images.insert_one({
+            "image_id": temp_image_id,
+            "user_id": user["user_id"],
+            "image_bytes": image_bytes,  # Store image for later attachment
+            "ocr_text": ocr_text,
+            "parsed_data": parsed,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        
+        # Log audit
+        await log_audit(user["user_id"], "scan_receipt", "ocr", temp_image_id, f"confidence={parsed['confidence']}")
+        
+        # Return parsed result with temp image ID
+        return {
+            "success": True,
+            "image_id": temp_image_id,
+            "currency": parsed["currency"],
+            "items": [
+                {"name": i["name"], "quantity": i["quantity"], "price": i["price"]}
+                for i in parsed["items"]
+            ],
+            "subtotal": round(parsed["subtotal"], 2),
+            "tax": round(parsed["tax"], 2),
+            "service_charge": round(parsed["service_charge"], 2),
+            "total": round(parsed["total"], 2),
+            "confidence": round(parsed["confidence"], 2),
+            "ocr_text": ocr_text  # For debugging/review
+        }
+    
+    except HTTPException:
+        # Re-raise HTTP exceptions (validation errors)
+        raise
+    except OCRError as e:
+        logger.error(f"[OCR] OCR failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"[OCR] Unexpected error: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to process receipt image: {type(e).__name__}")
+
+
+@api_router.post("/ocr/rescan-cropped")
+async def rescan_cropped_receipt(
+    image_id: str = Form(...),
+    crop_x: int = Form(...),
+    crop_y: int = Form(...),
+    crop_width: int = Form(...),
+    crop_height: int = Form(...),
+    user: dict = Depends(get_current_user)
+):
+    """Rescan a cropped portion of a previously scanned receipt."""
+    try:
+        receipt = await db.receipt_images.find_one({"image_id": image_id})
+        if not receipt:
+            raise HTTPException(status_code=404, detail="Receipt image not found")
+        
+        if receipt["user_id"] != user["user_id"]:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+        
+        from PIL import Image
+        from io import BytesIO
+        
+        image_bytes = receipt["image_bytes"]
+        img = Image.open(BytesIO(image_bytes))
+        cropped = img.crop((crop_x, crop_y, crop_x + crop_width, crop_y + crop_height))
+        
+        cropped_bytes = BytesIO()
+        cropped.save(cropped_bytes, format="PNG")
+        cropped_bytes = cropped_bytes.getvalue()
+        
+        logger.info(f"[OCR] Rescanning cropped area of {image_id}")
+        ocr_text = OCREngine.extract_text_from_image(cropped_bytes)
+        parsed = ReceiptParser.parse_receipt(ocr_text)
+        
+        await log_audit(
+            user["user_id"],
+            "rescan_cropped",
+            "ocr",
+            image_id,
+            f"crop=({crop_x},{crop_y},{crop_width},{crop_height}) confidence={parsed['confidence']}"
+        )
+        
+        return {
+            "success": True,
+            "image_id": image_id,
+            "currency": parsed["currency"],
+            "items": [
+                {"name": i["name"], "quantity": i["quantity"], "price": i["price"], "confidence": i.get("confidence", 0.9)}
+                for i in parsed["items"]
+            ],
+            "subtotal": round(parsed["subtotal"], 2),
+            "tax": round(parsed["tax"], 2),
+            "service_charge": round(parsed["service_charge"], 2),
+            "total": round(parsed["total"], 2),
+            "confidence": round(parsed["confidence"], 2),
+            "ocr_text": ocr_text
+        }
+    
+    except OCRError as e:
+        logger.error(f"[OCR] Rescan failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Rescan failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"[OCR] Rescan error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to rescan receipt area")
+
+
+@api_router.post("/ocr/confirm-receipt")
+async def confirm_receipt(
+    request_data: dict,
+    user: dict = Depends(get_current_user)
+):
+    """Confirm receipt OCR results and save to database."""
+    try:
+        image_id = request_data.get("image_id")
+        currency = request_data.get("currency", "USD")
+        items = request_data.get("items", [])
+        subtotal = float(request_data.get("subtotal", 0))
+        tax = float(request_data.get("tax", 0))
+        service_charge = float(request_data.get("service_charge", 0))
+        total = float(request_data.get("total", 0))
+        confidence = float(request_data.get("confidence", 0.9))
+        
+        if not items:
+            raise HTTPException(status_code=400, detail="No items in receipt")
+        
+        receipt_record = {
+            "image_id": image_id,
+            "user_id": user["user_id"],
+            "currency": currency,
+            "items": [
+                {
+                    "id": item.get("id", f"item_{uuid.uuid4().hex[:8]}"),
+                    "name": item["name"],
+                    "quantity": int(item.get("quantity", 1)),
+                    "price": float(item["price"]),
+                    "confidence": float(item.get("confidence", 0.9))
+                }
+                for item in items
+            ],
+            "subtotal": round(subtotal, 2),
+            "tax": round(tax, 2),
+            "service_charge": round(service_charge, 2),
+            "total": round(total, 2),
+            "confidence": round(confidence, 2),
+            "status": "confirmed",
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        result = await db.receipt_confirmations.insert_one(receipt_record)
+        
+        await log_audit(
+            user["user_id"],
+            "receipt_confirmed",
+            "ocr",
+            image_id,
+            f"items={len(items)} total={total} confidence={confidence}"
+        )
+        
+        logger.info(f"[OCR] Receipt {image_id} confirmed for user {user['user_id']}")
+        
+        return {
+            "success": True,
+            "receipt_id": str(result.inserted_id) if result.inserted_id else image_id,
+            "image_id": image_id,
+            "bill_id": "",
+            "message": "Receipt confirmed and ready to create bill"
+        }
+    
+    except Exception as e:
+        logger.error(f"[OCR] Confirm receipt failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to confirm receipt: {str(e)}")
+
+
+# ─── OCR MODULE PLACEHOLDER (Feature-flagged) ─────────────────────
+
+@api_router.post("/ocr/scan")
+async def ocr_scan_receipt_legacy(user: dict = Depends(require_pro)):
+    """OCR receipt scanning - Legacy. Use /ocr/scan-receipt instead."""
+    return {
+        "status": "deprecated",
+        "message": "Use POST /api/ocr/scan-receipt instead",
+        "supported_formats": ["image/jpeg", "image/png"],
+        "provider": "tesseract-ocr"
+    }
+
+# ─── EXPORT MODULE PLACEHOLDER (Pro-gated) ────────────────────────
+
+@api_router.post("/bills/{bill_id}/export/{format}")
+async def export_bill(bill_id: str, format: str, user: dict = Depends(require_pro)):
+    """Export bill as PDF/Excel/Image - Pro feature."""
+    if format not in ("pdf", "excel", "image", "text"):
+        raise HTTPException(status_code=400, detail="Invalid format. Supported: pdf, excel, image, text")
+    bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    return {
+        "status": "module_ready",
+        "message": f"Export as {format.upper()} is prepared. Rendering engine pending activation.",
+        "bill_id": bill_id,
+        "format": format,
+        "bill_title": bill.get("title"),
+        "total": bill.get("total_amount")
+    }
+
+# ─── HEALTH ────────────────────────────────────────────────────────
+
+@api_router.get("/health")
+async def health():
+    return {"status": "ok", "service": "SplitBill Pro API", "version": "2.0.0", "environment": "production-ready"}
+
+# ─── SETUP ─────────────────────────────────────────────────────────
+
+# Middleware order matters: first added = outermost
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(api_router)
+
+@app.on_event("startup")
+async def startup():
+    await db.users.create_index("user_id", unique=True)
+    await db.users.create_index("email", unique=True)
+    await db.user_sessions.create_index("session_token", unique=True)
+    await db.user_sessions.create_index("user_id")
+    await db.bills.create_index("bill_id", unique=True)
+    await db.bills.create_index("owner_id")
+    await db.bills.create_index("status")
+    await db.bills.create_index([("owner_id", 1), ("status", 1)])
+    await db.bills.create_index([("owner_id", 1), ("created_at", -1)])
+    await db.share_links.create_index("token", unique=True)
+    await db.share_links.create_index("bill_id")
+    await db.exchange_rates.create_index([("base_currency", 1), ("target_currency", 1)])
+    await db.subscriptions.create_index("user_id")
+    await db.audit_logs.create_index([("user_id", 1), ("timestamp", -1)])
+    await db.idempotency_keys.create_index("key", unique=True)
+    await db.idempotency_keys.create_index("created_at", expireAfterSeconds=86400)
+    logger.info("SplitBill Pro API v2.0.0 started - all indexes created")
+
+@app.on_event("shutdown")
+async def shutdown():
+    client.close()

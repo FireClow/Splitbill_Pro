@@ -1,0 +1,403 @@
+import { useState, useEffect } from 'react';
+import { View, Text, TouchableOpacity, ScrollView, StyleSheet, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { api } from '../utils/api';
+import { Colors } from '../utils/colors';
+import { useAuth } from '../contexts/AuthContext';
+import { useInterstitialAd } from '../hooks/useInterstitialAd';
+
+interface ItemDraft { name: string; price: string; quantity: string; }
+interface ParticipantDraft { name: string; contact_info: string; }
+
+const CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'INR', 'SGD', 'KRW', 'MXN', 'BRL', 'THB', 'IDR', 'MYR'];
+
+export default function CreateBillScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams();
+  const { user } = useAuth();
+  const { trackBillCreation } = useInterstitialAd(user?.isPremium);
+  const [step, setStep] = useState(0);
+  const [saving, setSaving] = useState(false);
+
+  const [title, setTitle] = useState('');
+  const [currency, setCurrency] = useState('USD');
+  const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
+
+  const [items, setItems] = useState<ItemDraft[]>([{ name: '', price: '', quantity: '1' }]);
+  const [participants, setParticipants] = useState<ParticipantDraft[]>([]);
+  const [newParticipantName, setNewParticipantName] = useState('');
+
+  const [taxType, setTaxType] = useState<'percentage' | 'fixed'>('percentage');
+  const [taxValue, setTaxValue] = useState('');
+  const [serviceCharge, setServiceCharge] = useState('');
+  const [splitMethod, setSplitMethod] = useState('equal');
+  const [receiptImageId, setReceiptImageId] = useState<string | null>(null);
+
+  // Load receipt data from scan if provided
+  useEffect(() => {
+    if (params.receiptData) {
+      try {
+        const receiptData = JSON.parse(params.receiptData as string);
+        
+        // Populate items
+        if (receiptData.items && receiptData.items.length > 0) {
+          setItems(receiptData.items.map((item: any) => ({
+            name: item.name,
+            price: item.price.toString(),
+            quantity: item.quantity.toString(),
+          })));
+        }
+        
+        // Set currency
+        if (receiptData.currency) {
+          setCurrency(receiptData.currency);
+        }
+        
+        // Set tax
+        if (receiptData.tax) {
+          setTaxValue(receiptData.tax.toString());
+        }
+        
+        // Set service charge
+        if (receiptData.service_charge) {
+          setServiceCharge(receiptData.service_charge.toString());
+        }
+        
+        // Save image ID for attachment
+        if (receiptData.image_id) {
+          setReceiptImageId(receiptData.image_id);
+        }
+      } catch (error) {
+        console.warn('Failed to parse receipt data:', error);
+      }
+    }
+  }, [params.receiptData]);
+
+  const addItem = () => setItems([...items, { name: '', price: '', quantity: '1' }]);
+  const removeItem = (i: number) => setItems(items.filter((_, idx) => idx !== i));
+  const updateItem = (i: number, field: keyof ItemDraft, value: string) => {
+    const updated = [...items];
+    updated[i] = { ...updated[i], [field]: value };
+    setItems(updated);
+  };
+
+  const addParticipant = () => {
+    if (!newParticipantName.trim()) return;
+    setParticipants([...participants, { name: newParticipantName.trim(), contact_info: '' }]);
+    setNewParticipantName('');
+  };
+  const removeParticipant = (i: number) => setParticipants(participants.filter((_, idx) => idx !== i));
+
+  const subtotal = items.reduce((sum, item) => {
+    const p = parseFloat(item.price) || 0;
+    const q = parseInt(item.quantity) || 1;
+    return sum + p * q;
+  }, 0);
+
+  const taxAmount = taxType === 'percentage'
+    ? subtotal * (parseFloat(taxValue) || 0) / 100
+    : parseFloat(taxValue) || 0;
+
+  const total = subtotal + taxAmount + (parseFloat(serviceCharge) || 0);
+
+  const handleSave = async () => {
+    if (!title.trim()) { Alert.alert('Error', 'Please enter a bill title'); return; }
+    const validItems = items.filter(i => i.name.trim() && parseFloat(i.price) > 0);
+    if (validItems.length === 0) { Alert.alert('Error', 'Please add at least one item'); return; }
+
+    setSaving(true);
+    try {
+      const billData = {
+        title: title.trim(),
+        currency,
+        items: validItems.map(i => ({ name: i.name.trim(), price: parseFloat(i.price), quantity: parseInt(i.quantity) || 1, assigned_to: [] })),
+        participants: participants.map(p => ({ name: p.name, contact_info: p.contact_info })),
+        tax_type: taxType,
+        tax_value: parseFloat(taxValue) || 0,
+        service_charge: parseFloat(serviceCharge) || 0,
+        split_method: splitMethod,
+      };
+      const result = await api.createBill(billData);
+      // Track this bill creation for ad frequency
+      await trackBillCreation();
+      router.replace(`/bill/${result.bill_id}`);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to create bill');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const steps = ['Details', 'Items', 'People', 'Review'];
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <View style={styles.topBar}>
+          <TouchableOpacity testID="close-create-bill" onPress={() => router.back()} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Ionicons name="close" size={28} color={Colors.white} />
+          </TouchableOpacity>
+          <Text style={styles.topBarTitle}>New Bill</Text>
+          <View style={{ width: 28 }} />
+        </View>
+
+        <View style={styles.stepsRow}>
+          {steps.map((s, i) => (
+            <View key={i} style={styles.stepItem}>
+              <View style={[styles.stepDot, i <= step && styles.stepDotActive]} />
+              <Text style={[styles.stepLabel, i <= step && styles.stepLabelActive]}>{s}</Text>
+            </View>
+          ))}
+        </View>
+
+        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+          {step === 0 && (
+            <View style={styles.stepContent}>
+              <Text style={styles.stepTitle}>Bill Details</Text>
+              <Text style={styles.inputLabel}>BILL TITLE</Text>
+              <TextInput testID="bill-title-input" style={styles.input} placeholder="e.g. Dinner at Restaurant" placeholderTextColor={Colors.muted} value={title} onChangeText={setTitle} />
+              <Text style={styles.inputLabel}>CURRENCY</Text>
+              <TouchableOpacity testID="currency-picker-btn" style={styles.input} onPress={() => setShowCurrencyPicker(!showCurrencyPicker)}>
+                <Text style={styles.inputText}>{currency}</Text>
+                <Ionicons name="chevron-down" size={18} color={Colors.muted} />
+              </TouchableOpacity>
+              {showCurrencyPicker && (
+                <View style={styles.currencyGrid}>
+                  {CURRENCIES.map(c => (
+                    <TouchableOpacity key={c} testID={`currency-${c}`} style={[styles.currencyChip, currency === c && styles.currencyChipActive]} onPress={() => { setCurrency(c); setShowCurrencyPicker(false); }}>
+                      <Text style={[styles.currencyChipText, currency === c && styles.currencyChipTextActive]}>{c}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+            </View>
+          )}
+
+          {step === 1 && (
+            <View style={styles.stepContent}>
+              <Text style={styles.stepTitle}>Add Items</Text>
+              {items.map((item, i) => (
+                <View key={i} style={styles.itemCard}>
+                  <View style={styles.itemHeader}>
+                    <Text style={styles.itemIndex}>Item {i + 1}</Text>
+                    {items.length > 1 && (
+                      <TouchableOpacity testID={`remove-item-${i}`} onPress={() => removeItem(i)}>
+                        <Ionicons name="trash-outline" size={18} color={Colors.error} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                  <TextInput testID={`item-name-${i}`} style={styles.itemInput} placeholder="Item name" placeholderTextColor={Colors.muted} value={item.name} onChangeText={(v) => updateItem(i, 'name', v)} />
+                  <View style={styles.itemRow}>
+                    <View style={styles.itemField}>
+                      <Text style={styles.miniLabel}>PRICE</Text>
+                      <TextInput testID={`item-price-${i}`} style={styles.itemInput} placeholder="0.00" placeholderTextColor={Colors.muted} value={item.price} onChangeText={(v) => updateItem(i, 'price', v)} keyboardType="decimal-pad" />
+                    </View>
+                    <View style={styles.itemFieldSmall}>
+                      <Text style={styles.miniLabel}>QTY</Text>
+                      <TextInput testID={`item-qty-${i}`} style={styles.itemInput} placeholder="1" placeholderTextColor={Colors.muted} value={item.quantity} onChangeText={(v) => updateItem(i, 'quantity', v)} keyboardType="number-pad" />
+                    </View>
+                  </View>
+                </View>
+              ))}
+              <TouchableOpacity testID="add-item-btn" style={styles.addItemBtn} onPress={addItem}>
+                <Ionicons name="add-circle-outline" size={22} color={Colors.primary} />
+                <Text style={styles.addItemText}>Add Item</Text>
+              </TouchableOpacity>
+
+              <View style={styles.divider} />
+              <Text style={styles.subsectionTitle}>Tax & Fees</Text>
+              <View style={styles.taxTypeRow}>
+                <TouchableOpacity testID="tax-percentage-btn" style={[styles.taxTypeChip, taxType === 'percentage' && styles.taxTypeActive]} onPress={() => setTaxType('percentage')}>
+                  <Text style={[styles.taxTypeText, taxType === 'percentage' && styles.taxTypeTextActive]}>Percentage %</Text>
+                </TouchableOpacity>
+                <TouchableOpacity testID="tax-fixed-btn" style={[styles.taxTypeChip, taxType === 'fixed' && styles.taxTypeActive]} onPress={() => setTaxType('fixed')}>
+                  <Text style={[styles.taxTypeText, taxType === 'fixed' && styles.taxTypeTextActive]}>Fixed Amount</Text>
+                </TouchableOpacity>
+              </View>
+              <TextInput testID="tax-value-input" style={styles.input} placeholder={taxType === 'percentage' ? 'Tax %' : 'Tax amount'} placeholderTextColor={Colors.muted} value={taxValue} onChangeText={setTaxValue} keyboardType="decimal-pad" />
+              <Text style={styles.miniLabel}>SERVICE CHARGE</Text>
+              <TextInput testID="service-charge-input" style={styles.input} placeholder="0.00" placeholderTextColor={Colors.muted} value={serviceCharge} onChangeText={setServiceCharge} keyboardType="decimal-pad" />
+            </View>
+          )}
+
+          {step === 2 && (
+            <View style={styles.stepContent}>
+              <Text style={styles.stepTitle}>Add People</Text>
+              <Text style={styles.stepSubtitle}>You&apos;re automatically added as the bill owner</Text>
+              <View style={styles.addParticipantRow}>
+                <TextInput testID="participant-name-input" style={[styles.input, { flex: 1, marginBottom: 0 }]} placeholder="Person name" placeholderTextColor={Colors.muted} value={newParticipantName} onChangeText={setNewParticipantName} onSubmitEditing={addParticipant} />
+                <TouchableOpacity testID="add-participant-btn" style={styles.addParticipantBtn} onPress={addParticipant}>
+                  <Ionicons name="add" size={24} color={Colors.primaryForeground} />
+                </TouchableOpacity>
+              </View>
+              {participants.map((p, i) => (
+                <View key={i} style={styles.participantCard}>
+                  <View style={styles.participantAvatar}>
+                    <Text style={styles.participantAvatarText}>{p.name[0].toUpperCase()}</Text>
+                  </View>
+                  <Text style={styles.participantName}>{p.name}</Text>
+                  <TouchableOpacity testID={`remove-participant-${i}`} onPress={() => removeParticipant(i)}>
+                    <Ionicons name="close-circle" size={22} color={Colors.error} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+
+              <View style={styles.divider} />
+              <Text style={styles.subsectionTitle}>Split Method</Text>
+              {['equal', 'per_item', 'percentage', 'custom'].map(m => (
+                <TouchableOpacity key={m} testID={`split-method-${m}`} style={[styles.splitMethodItem, splitMethod === m && styles.splitMethodActive]} onPress={() => setSplitMethod(m)}>
+                  <Ionicons name={splitMethod === m ? 'radio-button-on' : 'radio-button-off'} size={22} color={splitMethod === m ? Colors.primary : Colors.muted} />
+                  <Text style={[styles.splitMethodText, splitMethod === m && styles.splitMethodTextActive]}>
+                    {m === 'equal' ? 'Equal Split' : m === 'per_item' ? 'Split by Item' : m === 'percentage' ? 'By Percentage' : 'Custom Amounts'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
+          {step === 3 && (
+            <View style={styles.stepContent}>
+              <Text style={styles.stepTitle}>Review Bill</Text>
+              <View style={styles.reviewCard}>
+                <Text style={styles.reviewLabel}>BILL TITLE</Text>
+                <Text style={styles.reviewValue}>{title || 'Untitled'}</Text>
+                <View style={styles.reviewDivider} />
+                <Text style={styles.reviewLabel}>ITEMS ({items.filter(i => i.name && parseFloat(i.price) > 0).length})</Text>
+                {items.filter(i => i.name && parseFloat(i.price) > 0).map((item, i) => (
+                  <View key={i} style={styles.reviewItem}>
+                    <Text style={styles.reviewItemName}>{item.name} x{item.quantity || 1}</Text>
+                    <Text style={styles.reviewItemPrice}>{currency} {(parseFloat(item.price) * (parseInt(item.quantity) || 1)).toFixed(2)}</Text>
+                  </View>
+                ))}
+                <View style={styles.reviewDivider} />
+                <View style={styles.reviewItem}>
+                  <Text style={styles.reviewLabel}>SUBTOTAL</Text>
+                  <Text style={styles.reviewValue}>{currency} {subtotal.toFixed(2)}</Text>
+                </View>
+                {taxAmount > 0 && (
+                  <View style={styles.reviewItem}>
+                    <Text style={styles.reviewSmallLabel}>Tax</Text>
+                    <Text style={styles.reviewSmallValue}>{currency} {taxAmount.toFixed(2)}</Text>
+                  </View>
+                )}
+                {parseFloat(serviceCharge) > 0 && (
+                  <View style={styles.reviewItem}>
+                    <Text style={styles.reviewSmallLabel}>Service Charge</Text>
+                    <Text style={styles.reviewSmallValue}>{currency} {parseFloat(serviceCharge).toFixed(2)}</Text>
+                  </View>
+                )}
+                <View style={styles.reviewDivider} />
+                <View style={styles.reviewItem}>
+                  <Text style={styles.totalLabel}>TOTAL</Text>
+                  <Text style={styles.totalValue}>{currency} {total.toFixed(2)}</Text>
+                </View>
+              </View>
+              <View style={styles.reviewCard}>
+                <Text style={styles.reviewLabel}>PARTICIPANTS ({participants.length + 1})</Text>
+                <Text style={styles.reviewSmallValue}>You + {participants.length} others</Text>
+                <View style={styles.reviewDivider} />
+                <Text style={styles.reviewLabel}>SPLIT METHOD</Text>
+                <Text style={styles.reviewSmallValue}>{splitMethod === 'equal' ? 'Equal' : splitMethod === 'per_item' ? 'By Item' : splitMethod === 'percentage' ? 'Percentage' : 'Custom'}</Text>
+              </View>
+            </View>
+          )}
+        </ScrollView>
+
+        <View style={styles.bottomBar}>
+          {step > 0 && (
+            <TouchableOpacity testID="prev-step-btn" style={styles.prevBtn} onPress={() => setStep(step - 1)}>
+              <Ionicons name="arrow-back" size={20} color={Colors.white} />
+              <Text style={styles.prevBtnText}>Back</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            testID={step < 3 ? 'next-step-btn' : 'save-bill-btn'}
+            style={[styles.nextBtn, step === 0 && { flex: 1 }]}
+            onPress={step < 3 ? () => setStep(step + 1) : handleSave}
+            disabled={saving}
+            activeOpacity={0.8}
+          >
+            {saving ? (
+              <ActivityIndicator size="small" color={Colors.primaryForeground} />
+            ) : (
+              <>
+                <Text style={styles.nextBtnText}>{step < 3 ? 'Continue' : 'Create Bill'}</Text>
+                {step < 3 && <Ionicons name="arrow-forward" size={20} color={Colors.primaryForeground} />}
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: Colors.background },
+  topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingVertical: 12 },
+  topBarTitle: { fontSize: 18, fontWeight: '600', color: Colors.white },
+  stepsRow: { flexDirection: 'row', justifyContent: 'space-around', paddingHorizontal: 24, marginBottom: 24 },
+  stepItem: { alignItems: 'center', gap: 6 },
+  stepDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.border },
+  stepDotActive: { backgroundColor: Colors.primary, width: 24 },
+  stepLabel: { fontSize: 12, color: Colors.muted, fontWeight: '500' },
+  stepLabelActive: { color: Colors.primary },
+  scrollView: { flex: 1 },
+  scrollContent: { paddingHorizontal: 24, paddingBottom: 32 },
+  stepContent: { gap: 4 },
+  stepTitle: { fontSize: 24, fontWeight: '700', color: Colors.white, letterSpacing: -0.5, marginBottom: 16 },
+  stepSubtitle: { fontSize: 14, color: Colors.textMuted, marginBottom: 16, marginTop: -8 },
+  inputLabel: { fontSize: 12, fontWeight: '500', color: Colors.textMuted, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 8, marginTop: 12 },
+  input: { backgroundColor: Colors.surface, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, height: 56, paddingHorizontal: 16, color: Colors.white, fontSize: 16, marginBottom: 4, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  inputText: { color: Colors.white, fontSize: 16 },
+  currencyGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8, marginBottom: 8 },
+  currencyChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 100, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
+  currencyChipActive: { backgroundColor: Colors.primary + '20', borderColor: Colors.primary },
+  currencyChipText: { fontSize: 14, fontWeight: '500', color: Colors.muted },
+  currencyChipTextActive: { color: Colors.primary },
+  itemCard: { backgroundColor: Colors.surface, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: Colors.border },
+  itemHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  itemIndex: { fontSize: 13, fontWeight: '600', color: Colors.primary, textTransform: 'uppercase', letterSpacing: 0.5 },
+  itemInput: { backgroundColor: Colors.background, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, height: 48, paddingHorizontal: 14, color: Colors.white, fontSize: 15, marginBottom: 8 },
+  itemRow: { flexDirection: 'row', gap: 12 },
+  itemField: { flex: 2 },
+  itemFieldSmall: { flex: 1 },
+  miniLabel: { fontSize: 11, fontWeight: '500', color: Colors.textMuted, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 6, marginTop: 8 },
+  addItemBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: Colors.primary + '40', borderStyle: 'dashed', marginBottom: 16 },
+  addItemText: { fontSize: 15, fontWeight: '600', color: Colors.primary },
+  divider: { height: 1, backgroundColor: Colors.border, marginVertical: 24 },
+  subsectionTitle: { fontSize: 18, fontWeight: '600', color: Colors.white, marginBottom: 16, letterSpacing: -0.25 },
+  taxTypeRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
+  taxTypeChip: { flex: 1, paddingVertical: 10, borderRadius: 12, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, alignItems: 'center' },
+  taxTypeActive: { backgroundColor: Colors.primary + '20', borderColor: Colors.primary },
+  taxTypeText: { fontSize: 14, fontWeight: '500', color: Colors.muted },
+  taxTypeTextActive: { color: Colors.primary },
+  addParticipantRow: { flexDirection: 'row', gap: 12, marginBottom: 16, alignItems: 'center' },
+  addParticipantBtn: { width: 56, height: 56, borderRadius: 16, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center' },
+  participantCard: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  participantAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.surfaceHighlight, justifyContent: 'center', alignItems: 'center' },
+  participantAvatarText: { fontSize: 16, fontWeight: '600', color: Colors.white },
+  participantName: { flex: 1, fontSize: 16, fontWeight: '500', color: Colors.white },
+  splitMethodItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  splitMethodActive: { borderBottomColor: Colors.primary + '30' },
+  splitMethodText: { fontSize: 16, fontWeight: '500', color: Colors.muted },
+  splitMethodTextActive: { color: Colors.white },
+  reviewCard: { backgroundColor: Colors.surface, borderRadius: 20, padding: 24, marginBottom: 16, borderWidth: 1, borderColor: Colors.border },
+  reviewLabel: { fontSize: 12, fontWeight: '500', color: Colors.textMuted, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 4 },
+  reviewValue: { fontSize: 18, fontWeight: '600', color: Colors.white },
+  reviewDivider: { height: 1, backgroundColor: Colors.border, marginVertical: 16 },
+  reviewItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  reviewItemName: { fontSize: 15, color: Colors.textSecondary },
+  reviewItemPrice: { fontSize: 15, fontWeight: '600', color: Colors.white },
+  reviewSmallLabel: { fontSize: 14, color: Colors.textMuted },
+  reviewSmallValue: { fontSize: 14, fontWeight: '500', color: Colors.textSecondary },
+  totalLabel: { fontSize: 16, fontWeight: '700', color: Colors.primary, letterSpacing: 0.5 },
+  totalValue: { fontSize: 24, fontWeight: '800', color: Colors.primary, letterSpacing: -0.5 },
+  bottomBar: { flexDirection: 'row', paddingHorizontal: 24, paddingVertical: 16, gap: 12, borderTopWidth: 1, borderTopColor: Colors.border },
+  prevBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 20, height: 56, borderRadius: 100, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
+  prevBtnText: { fontSize: 16, fontWeight: '600', color: Colors.white },
+  nextBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 56, borderRadius: 100, backgroundColor: Colors.primary },
+  nextBtnText: { fontSize: 16, fontWeight: '600', color: Colors.primaryForeground, letterSpacing: 0.5 },
+});

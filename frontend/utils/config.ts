@@ -1,0 +1,81 @@
+import { Platform } from 'react-native';
+
+/**
+ * API Configuration
+ * - Development: Uses local machine IP for network access via Expo Go
+ * - Production: Uses deployed API endpoint
+ */
+
+// Development IP - change this if your laptop IP changes
+const DEV_API_IP = '192.168.1.3';
+const DEV_API_PORT = 8001;
+
+// Production API endpoint
+const PROD_API_URL = 'https://api.splitbill.com';
+
+// Environment detection
+const isDevelopment = __DEV__;
+
+export const API_CONFIG = {
+  // Base URL for API calls
+  baseURL: isDevelopment 
+    ? `http://${DEV_API_IP}:${DEV_API_PORT}`
+    : PROD_API_URL,
+
+  // API endpoints
+  endpoints: {
+    health: '/api/health',
+    auth: {
+      login: '/api/auth/login',
+      logout: '/api/auth/logout',
+      verify: '/api/auth/verify',
+    },
+    bills: {
+      list: '/api/bills',
+      create: '/api/bills',
+      get: (id: string) => `/api/bills/${id}`,
+      update: (id: string) => `/api/bills/${id}`,
+      delete: (id: string) => `/api/bills/${id}`,
+    },
+    ocr: {
+      scanReceipt: '/api/ocr/scan-receipt',
+      rescanCropped: '/api/ocr/rescan-cropped',
+      confirmReceipt: '/api/ocr/confirm-receipt',
+    },
+    dashboard: '/api/dashboard/stats',
+  },
+
+  // Timeouts
+  timeouts: {
+    default: 30000,      // 30 seconds
+    upload: 60000,       // 60 seconds (for large files)
+  },
+
+  // Debug mode
+  debug: isDevelopment,
+};
+
+/**
+ * Helper to build full URL
+ * @param endpoint - API endpoint (e.g., '/api/bills')
+ * @returns Full URL
+ */
+export const getApiUrl = (endpoint: string): string => {
+  return `${API_CONFIG.baseURL}${endpoint}`;
+};
+
+/**
+ * Helper to get OCR endpoint
+ * @param type - 'scan', 'rescan', or 'confirm'
+ * @returns Full URL
+ */
+export const getOcrUrl = (type: 'scan' | 'rescan' | 'confirm'): string => {
+  const endpoints = {
+    scan: API_CONFIG.endpoints.ocr.scanReceipt,
+    rescan: API_CONFIG.endpoints.ocr.rescanCropped,
+    confirm: API_CONFIG.endpoints.ocr.confirmReceipt,
+  };
+  return getApiUrl(endpoints[type]);
+};
+
+export default API_CONFIG;

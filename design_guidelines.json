@@ -1,0 +1,252 @@
+{
+  "identity": "E1_Anti_AI_Designer",
+  "project_name": "SplitBill Pro",
+  "platform": "React Native Expo",
+  "theme_strategy": {
+    "primary_mode": "dark",
+    "emotional_archetype": "The Performance Pro",
+    "description": "A high-octane fintech aesthetic that balances 'Tactical Precision' with 'Social Energy'. It uses deep void backgrounds to make the neon lime accents pop, signaling speed and trust."
+  },
+  "typography": {
+    "font_family": {
+      "headings": "System",
+      "body": "System",
+      "android_note": "Use 'Roboto' or 'Inter' if available, else system sans-serif.",
+      "ios_note": "Use 'San Francisco' (System) with tight tracking."
+    },
+    "scale": {
+      "display": { "fontSize": 48, "fontWeight": "800", "letterSpacing": -1.5, "lineHeight": 56 },
+      "h1": { "fontSize": 32, "fontWeight": "700", "letterSpacing": -1.0, "lineHeight": 40 },
+      "h2": { "fontSize": 24, "fontWeight": "600", "letterSpacing": -0.5, "lineHeight": 32 },
+      "h3": { "fontSize": 20, "fontWeight": "600", "letterSpacing": -0.25, "lineHeight": 28 },
+      "body_lg": { "fontSize": 18, "fontWeight": "400", "lineHeight": 28 },
+      "body": { "fontSize": 16, "fontWeight": "400", "lineHeight": 24 },
+      "caption": { "fontSize": 13, "fontWeight": "500", "letterSpacing": 0.5, "textTransform": "uppercase" }
+    },
+    "rules": [
+      "Headings must use tight tracking (-0.5 to -1.5) to look premium.",
+      "Caps must be used for labels (CAPTION style) with wide spacing.",
+      "Never use 'Inter' for headings unless it's the only option. Prefer system font with weight adjustments."
+    ]
+  },
+  "colors": {
+    "palette": {
+      "background": "#09090B",
+      "surface": "#18181B",
+      "surface_highlight": "#27272A",
+      "primary": "#D4F478",
+      "primary_foreground": "#000000",
+      "secondary": "#E4E4E7",
+      "muted": "#71717A",
+      "border": "#27272A",
+      "error": "#EF4444",
+      "success": "#22C55E",
+      "warning": "#F59E0B",
+      "info": "#3B82F6",
+      "google_btn": "#FFFFFF",
+      "google_text": "#000000"
+    },
+    "gradients": {
+      "primary_glow": "linear-gradient(180deg, rgba(212, 244, 120, 0.2) 0%, rgba(9, 9, 11, 0) 100%)",
+      "surface_shine": "linear-gradient(45deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0) 100%)"
+    },
+    "accessibility": {
+      "text_on_primary": "Must be Black (#000000) on Lime (#D4F478).",
+      "text_on_bg": "Must be White (#FFFFFF) or Zinc-100 (#F4F4F5)."
+    }
+  },
+  "spacing": {
+    "scale": {
+      "xs": 4,
+      "s": 8,
+      "m": 16,
+      "l": 24,
+      "xl": 32,
+      "xxl": 48,
+      "section": 64
+    },
+    "layout_rules": [
+      "Use 2x spacing for section gaps (e.g., 32px or 48px).",
+      "Containers with borders must have padding-horizontal: 16px minimum.",
+      "Touch targets must have a minimum hit slop of 10px if visually small."
+    ]
+  },
+  "components": {
+    "buttons": {
+      "primary": {
+        "backgroundColor": "#D4F478",
+        "borderRadius": 100,
+        "height": 56,
+        "justifyContent": "center",
+        "alignItems": "center",
+        "shadowColor": "#D4F478",
+        "shadowOffset": { "width": 0, "height": 4 },
+        "shadowOpacity": 0.2,
+        "shadowRadius": 8
+      },
+      "secondary": {
+        "backgroundColor": "#27272A",
+        "borderRadius": 100,
+        "height": 56,
+        "justifyContent": "center",
+        "alignItems": "center",
+        "borderWidth": 1,
+        "borderColor": "#3F3F46"
+      },
+      "google_oauth": {
+        "backgroundColor": "#FFFFFF",
+        "borderRadius": 100,
+        "height": 56,
+        "justifyContent": "center",
+        "alignItems": "center",
+        "borderWidth": 0
+      },
+      "fab": {
+        "position": "absolute",
+        "bottom": 32,
+        "right": 24,
+        "width": 64,
+        "height": 64,
+        "borderRadius": 32,
+        "backgroundColor": "#D4F478",
+        "justifyContent": "center",
+        "alignItems": "center",
+        "shadowColor": "#D4F478",
+        "shadowOffset": { "width": 0, "height": 8 },
+        "shadowOpacity": 0.4,
+        "shadowRadius": 12,
+        "elevation": 8
+      },
+      "text_style": {
+        "fontSize": 16,
+        "fontWeight": "600",
+        "letterSpacing": 0.5
+      }
+    },
+    "cards": {
+      "base": {
+        "backgroundColor": "#18181B",
+        "borderRadius": 24,
+        "padding": 24,
+        "borderWidth": 1,
+        "borderColor": "#27272A"
+      },
+      "active": {
+        "borderColor": "#D4F478",
+        "borderWidth": 1
+      },
+      "bill_item": {
+        "flexDirection": "row",
+        "justifyContent": "space-between",
+        "alignItems": "center",
+        "paddingVertical": 16,
+        "borderBottomWidth": 1,
+        "borderBottomColor": "#27272A"
+      }
+    },
+    "inputs": {
+      "container": {
+        "backgroundColor": "#09090B",
+        "borderRadius": 16,
+        "borderWidth": 1,
+        "borderColor": "#27272A",
+        "height": 56,
+        "paddingHorizontal": 16,
+        "justifyContent": "center",
+        "marginBottom": 16
+      },
+      "focused": {
+        "borderColor": "#D4F478",
+        "shadowColor": "#D4F478",
+        "shadowOpacity": 0.1,
+        "shadowRadius": 4
+      },
+      "label": {
+        "color": "#71717A",
+        "fontSize": 12,
+        "textTransform": "uppercase",
+        "marginBottom": 8,
+        "letterSpacing": 0.5
+      }
+    },
+    "navigation": {
+      "tab_bar": {
+        "backgroundColor": "#09090B",
+        "borderTopColor": "#27272A",
+        "height": 80,
+        "paddingBottom": 20
+      }
+    },
+    "split_ui": {
+      "avatar": {
+        "width": 48,
+        "height": 48,
+        "borderRadius": 24,
+        "borderWidth": 2,
+        "borderColor": "#09090B"
+      },
+      "progress_bar": {
+        "height": 8,
+        "borderRadius": 4,
+        "backgroundColor": "#27272A",
+        "fillColor": "#D4F478"
+      }
+    }
+  },
+  "layout_patterns": {
+    "bento_grid": {
+      "concept": "Mix of 1x1 squares and 2x1 rectangles.",
+      "implementation": "Use Flexbox with wrap. Width 48% for squares, 100% for rectangles. Gap 4%."
+    },
+    "headers": {
+      "concept": "Big, bold, left-aligned. Never centered.",
+      "style": "marginBottom: 24"
+    },
+    "lists": {
+      "concept": "Clean rows with ample vertical padding (16px+).",
+      "separator": "borderBottomColor: #27272A, borderBottomWidth: 1"
+    }
+  },
+  "motion": {
+    "default_transition": {
+      "type": "spring",
+      "damping": 20,
+      "stiffness": 90
+    },
+    "interactions": [
+      "Button press: Scale down to 0.96.",
+      "List item press: Background color flash to #27272A.",
+      "Screen enter: Fade in + Slide up 20px."
+    ],
+    "library": "react-native-reanimated"
+  },
+  "assets": {
+    "icons": {
+      "library": "@expo/vector-icons",
+      "set": "Ionicons",
+      "style": "Stroke width 2px (if applicable), Size 24px default."
+    },
+    "images": {
+      "style": "Border radius 16px minimum. Subtle overlay if text is on top."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Use StyleSheet.create() for all styles. No inline styles for complex components.",
+    "Use SafeAreaView from react-native-safe-area-context for all screen wrappers.",
+    "Use <StatusBar style='light' /> for dark mode.",
+    "Implement 'Gap' using gap property in flex containers (supported in React Native new arch, or use margins if older).",
+    "For shadows, use specific iOS (shadowColor, shadowOffset, shadowOpacity, shadowRadius) and Android (elevation) props.",
+    "Do not use generic 'blue' for links. Use the Primary Lime (#D4F478) or White with underline.",
+    "For the 'Split Engine', use a carousel or tab view to switch between Equal/Percentage/Custom modes."
+  ],
+  "universal_guidelines": [
+    "Dark Mode is the default. Background is #09090B.",
+    "Text hierarchy is key: Primary text is White, Secondary is #A1A1AA.",
+    "Avoid gradients on text unless for a very specific 'hero' moment.",
+    "Buttons should feel tactile. Use Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light) on press.",
+    "Inputs should highlight with the primary color on focus.",
+    "Never center the dashboard content. Left align for scanning speed.",
+    "Use 'Sonner' style toasts (top or bottom floating capsules) for notifications.",
+    "For 'Google Auth', use a clean White button with black text and the Google G icon."
+  ]
+}

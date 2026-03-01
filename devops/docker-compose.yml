@@ -1,0 +1,48 @@
+version: "3.9"
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: devops/Dockerfile
+    ports:
+      - "8001:8001"
+    env_file:
+      - ../.env.production
+    depends_on:
+      - mongo
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
