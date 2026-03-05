@@ -201,9 +201,17 @@ export const api = {
     apiFetch('/subscription/upgrade', { method: 'POST', body: JSON.stringify(data) }),
   getFeatures: () => apiFetch('/subscription/features'),
 
+  // User Preferences
+  getUserPreferences: () => apiFetch('/user/preferences'),
+  updateUserPreferences: (data: Record<string, any>) =>
+    apiFetch('/user/preferences', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
   // Analytics
   getAnalyticsSummary: () => apiFetch('/analytics/summary'),
-  getAnalyticsSpending: () => apiFetch('/analytics/spending'),
+  getAnalyticsSpending: (month?: string) => apiFetch(`/analytics/spending${month ? `?month=${month}` : ''}`),
   getAnalyticsCurrencies: () => apiFetch('/analytics/currencies'),
 
   // OCR (placeholder)

@@ -7,6 +7,7 @@ interface User {
   email: string;
   name: string;
   picture?: string;
+  preferred_currency?: string; // User's preferred currency (default: USD)
   isPremium?: boolean; // Feature flag: Premium users don't see ads
 }
 

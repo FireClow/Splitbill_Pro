@@ -9,6 +9,7 @@ import {
   Alert,
   SafeAreaView,
   Platform,
+  ScrollView,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
@@ -18,6 +19,7 @@ import { MaterialCommunityIcons, FontAwesome } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getOcrUrl } from '../utils/config';
+import { Colors } from '../utils/colors';
 
 interface ScannedReceipt {
   image_id: string;
@@ -269,34 +271,46 @@ export default function ScanReceiptScreen() {
           {/* Camera header */}
           <View style={styles.cameraHeader}>
             <TouchableOpacity
-              onPress={() => setCameraMode(null)}
-              style={styles.closeButton}
+              onPress={() => {
+                setCameraMode(null);
+                router.replace('/');
+              }}
+              style={styles.cameraCloseButton}
             >
-              <MaterialCommunityIcons name="close" size={28} color="white" />
+              <MaterialCommunityIcons name="close" size={24} color="white" />
             </TouchableOpacity>
-            <Text style={styles.cameraTitle}>Align receipt with frame</Text>
-            <View style={{ width: 28 }} />
+            <View style={styles.cameraHeaderContent}>
+              <Text style={styles.cameraTitle}>Align receipt</Text>
+              <Text style={styles.cameraSubtitle}>Center it in the frame</Text>
+            </View>
+            <View style={{ width: 40 }} />
           </View>
 
           {/* Focus frame */}
-          <View style={styles.focusFrame} />
+          <View style={styles.focusFrame}>
+            <Text style={styles.frameText}>📸</Text>
+          </View>
 
           {/* Camera buttons */}
           <View style={styles.cameraFooter}>
             <TouchableOpacity
               onPress={handlePickImage}
+              disabled={loading}
               style={styles.galleryButton}
+              activeOpacity={0.7}
             >
-              <MaterialCommunityIcons name="image" size={24} color="#06B6D4" />
+              <MaterialCommunityIcons name="image-multiple" size={24} color="white" />
+              <Text style={styles.galleryButtonText}>Gallery</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               onPress={handleTakePhoto}
               disabled={loading}
               style={[styles.captureButton, loading && styles.captureButtonDisabled]}
+              activeOpacity={0.8}
             >
               {loading ? (
-                <ActivityIndicator color="white" size={40} />
+                <ActivityIndicator color={Colors.primaryForeground} size={28} />
               ) : (
                 <View style={styles.captureButtonInner} />
               )}
@@ -322,89 +336,112 @@ export default function ScanReceiptScreen() {
   if (scanned) {
     return (
       <SafeAreaView style={styles.container}>
-        <View style={styles.content}>
-          {/* Header */}
-          <View style={styles.header}>
-            <TouchableOpacity onPress={() => setCameraMode(null)}>
-              <MaterialCommunityIcons name="arrow-left" size={24} color="#0F172A" />
-            </TouchableOpacity>
-            <Text style={styles.headerTitle}>Scan Results</Text>
-            <View style={{ width: 24 }} />
-          </View>
+        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+          <View style={styles.content}>
+            {/* Header */}
+            <View style={styles.header}>
+              <TouchableOpacity onPress={() => {
+                setScanned(null);
+                setCameraMode(null);
+                router.replace('/');
+              }} hitSlop={8}>
+                <MaterialCommunityIcons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+              <Text style={styles.headerTitle}>Receipt Details</Text>
+              <View style={{ width: 24 }} />
+            </View>
 
-          {/* Results summary */}
-          <View style={styles.resultsCard}>
             {/* Confidence badge */}
-            <View style={[
-              styles.confidenceBadge,
-              { backgroundColor: scanned.confidence > 0.8 ? '#10B981' : scanned.confidence > 0.6 ? '#F59E0B' : '#EF4444' }
-            ]}>
+            <View
+              style={[
+                styles.confidenceBadge,
+                {
+                  backgroundColor:
+                    scanned.confidence > 0.8
+                      ? Colors.success
+                      : scanned.confidence > 0.6
+                      ? Colors.warning
+                      : Colors.error,
+                },
+              ]}
+            >
+              <Text style={styles.confidenceEmoji}>
+                {scanned.confidence > 0.8 ? '✅' : scanned.confidence > 0.6 ? '⚠️' : '❌'}
+              </Text>
               <Text style={styles.confidenceText}>
-                {Math.round(scanned.confidence * 100)}% confidence
+                {Math.round(scanned.confidence * 100)}% accuracy
               </Text>
             </View>
 
-            {/* Items count */}
-            <Text style={styles.itemsCount}>
-              {scanned.items.length} items detected
-            </Text>
+            {/* Total amount - Big and clear */}
+            <View style={styles.totalCard}>
+              <Text style={styles.totalLabel}>Total Amount</Text>
+              <Text style={styles.totalAmount}>
+                {scanned.currency} {scanned.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </Text>
+              <Text style={styles.itemCountText}>{scanned.items.length} items detected</Text>
+            </View>
 
-            {/* Total */}
-            <Text style={styles.totalAmount}>
-              {scanned.currency} {scanned.total.toFixed(2)}
-            </Text>
-
-            {/* Details */}
-            <View style={styles.detailsGrid}>
-              <View style={styles.detailItem}>
-                <Text style={styles.detailLabel}>Subtotal</Text>
-                <Text style={styles.detailValue}>{scanned.subtotal.toFixed(2)}</Text>
+            {/* Breakdown */}
+            <View style={styles.breakdownCard}>
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownLabel}>Subtotal</Text>
+                <Text style={styles.breakdownValue}>{scanned.subtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
               </View>
-              <View style={styles.detailItem}>
-                <Text style={styles.detailLabel}>Tax</Text>
-                <Text style={styles.detailValue}>{scanned.tax.toFixed(2)}</Text>
-              </View>
-              <View style={styles.detailItem}>
-                <Text style={styles.detailLabel}>Service</Text>
-                <Text style={styles.detailValue}>{scanned.service_charge.toFixed(2)}</Text>
-              </View>
+              {scanned.tax > 0 && (
+                <View style={styles.breakdownRow}>
+                  <Text style={styles.breakdownLabel}>Tax</Text>
+                  <Text style={styles.breakdownValue}>{scanned.tax.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                </View>
+              )}
+              {scanned.service_charge > 0 && (
+                <View style={styles.breakdownRow}>
+                  <Text style={styles.breakdownLabel}>Service</Text>
+                  <Text style={styles.breakdownValue}>{scanned.service_charge.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                </View>
+              )}
             </View>
 
             {/* Items preview */}
-            <View style={styles.itemsPreview}>
-              <Text style={styles.previewTitle}>Items:</Text>
-              {scanned.items.slice(0, 3).map((item, idx) => (
-                <View key={idx} style={styles.itemPreview}>
-                  <Text style={styles.itemName}>{item.name}</Text>
-                  <Text style={styles.itemDetails}>
-                    {item.quantity}x {item.price.toFixed(2)}
-                  </Text>
+            <View style={styles.itemsCard}>
+              <Text style={styles.itemsTitle}>Items</Text>
+              {scanned.items.slice(0, 5).map((item, idx) => (
+                <View key={idx} style={styles.itemRow}>
+                  <View style={styles.itemRowLeft}>
+                    <Text style={styles.itemQty}>{item.quantity}x</Text>
+                    <Text style={styles.itemName} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                  </View>
+                  <Text style={styles.itemPrice}>{item.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
                 </View>
               ))}
-              {scanned.items.length > 3 && (
-                <Text style={styles.moreItems}>+{scanned.items.length - 3} more</Text>
+              {scanned.items.length > 5 && (
+                <Text style={styles.moreCountText}>+{scanned.items.length - 5} more items</Text>
               )}
             </View>
           </View>
+        </ScrollView>
 
-          {/* Action buttons */}
-          <View style={styles.actions}>
-            <TouchableOpacity
-              onPress={handleRetakeScan}
-              style={styles.secondaryButton}
-            >
-              <MaterialCommunityIcons name="camera-retake" size={20} color="#0F172A" />
-              <Text style={styles.secondaryButtonText}>Retake</Text>
-            </TouchableOpacity>
+        {/* Action buttons - fixed at bottom */}
+        <View style={styles.bottomActions}>
+          <TouchableOpacity
+            onPress={handleRetakeScan}
+            style={styles.secondaryButton}
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons name="camera-retake" size={18} color={Colors.text} />
+            <Text style={styles.secondaryButtonText}>Retake</Text>
+          </TouchableOpacity>
 
-            <TouchableOpacity
-              onPress={handleReviewResults}
-              style={styles.primaryButton}
-            >
-              <Text style={styles.primaryButtonText}>Review & Edit</Text>
-              <MaterialCommunityIcons name="arrow-right" size={20} color="white" />
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            onPress={handleReviewResults}
+            style={styles.primaryButton}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.primaryButtonText}>Proceed</Text>
+            <MaterialCommunityIcons name="chevron-right" size={18} color={Colors.primaryForeground} />
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
     );
@@ -413,66 +450,91 @@ export default function ScanReceiptScreen() {
   // Render initial screen
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <MaterialCommunityIcons name="arrow-left" size={24} color="#0F172A" />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Scan Receipt</Text>
-          <View style={{ width: 24 }} />
-        </View>
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+        <View style={styles.content}>
+          {/* Header */}
+          <View style={styles.header}>
+            <TouchableOpacity onPress={() => router.replace('/')} hitSlop={8}>
+              <MaterialCommunityIcons name="close" size={24} color={Colors.text} />
+            </TouchableOpacity>
+            <Text style={styles.headerTitle}>Scan Receipt</Text>
+            <View style={{ width: 24 }} />
+          </View>
 
-        {/* Illustration */}
-        <View style={styles.illustration}>
-          <MaterialCommunityIcons name="receipt" size={100} color="#3B82F6" />
-          <Text style={styles.illustrationText}>Scan your receipt</Text>
-          <Text style={styles.illustrationSubtext}>
-            Automatically extract items and prices
-          </Text>
-        </View>
+          {/* Illustration */}
+          <View style={styles.illustration}>
+            <Text style={styles.illustrationEmoji}>📸</Text>
+            <Text style={styles.illustrationText}>Quick Scan</Text>
+            <Text style={styles.illustrationSubtext}>
+              Let the camera do the work
+            </Text>
+          </View>
 
-        {/* Options */}
-        <View style={styles.optionsContainer}>
-          <TouchableOpacity
-            onPress={() => setCameraMode('camera')}
-            style={styles.optionCard}
-          >
-            <View style={styles.optionIconContainer}>
-              <MaterialCommunityIcons name="camera" size={40} color="#3B82F6" />
+          {/* Options */}
+          <View style={styles.optionsContainer}>
+            <TouchableOpacity
+              onPress={() => setCameraMode('camera')}
+              style={styles.optionButton}
+              activeOpacity={0.7}
+            >
+              <View style={styles.optionButtonLeft}>
+                <Text style={styles.optionIcon}>📷</Text>
+                <View>
+                  <Text style={styles.optionTitle}>Take Photo</Text>
+                  <Text style={styles.optionDesc}>Use your camera</Text>
+                </View>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={20} color={Colors.muted} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handlePickImage}
+              disabled={loading}
+              style={[styles.optionButton, loading && styles.optionButtonDisabled]}
+              activeOpacity={0.7}
+            >
+              <View style={styles.optionButtonLeft}>
+                {loading ? (
+                  <ActivityIndicator color={Colors.primary} size={20} />
+                ) : (
+                  <Text style={styles.optionIcon}>🖼️</Text>
+                )}
+                <View>
+                  <Text style={styles.optionTitle}>Choose Photo</Text>
+                  <Text style={styles.optionDesc}>From your gallery</Text>
+                </View>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={20} color={Colors.muted} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => router.push('/create-bill')}
+              style={styles.optionButton}
+              activeOpacity={0.7}
+            >
+              <View style={styles.optionButtonLeft}>
+                <Text style={styles.optionIcon}>✏️</Text>
+                <View>
+                  <Text style={styles.optionTitle}>Type Manually</Text>
+                  <Text style={styles.optionDesc}>Enter items by hand</Text>
+                </View>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={20} color={Colors.muted} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Info section */}
+          <View style={styles.infoSection}>
+            <View style={styles.infoBox}>
+              <Text style={styles.infoIcon}>💡</Text>
+              <View>
+                <Text style={styles.infoTitle}>Pro tip</Text>
+                <Text style={styles.infoText}>For best results, take a clear photo in good lighting</Text>
+              </View>
             </View>
-            <Text style={styles.optionTitle}>Take Photo</Text>
-            <Text style={styles.optionDescription}>Use camera to scan receipt</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={handlePickImage}
-            disabled={loading}
-            style={[styles.optionCard, loading && styles.optionCardDisabled]}
-          >
-            <View style={styles.optionIconContainer}>
-              {loading ? (
-                <ActivityIndicator color="#3B82F6" size={40} />
-              ) : (
-                <MaterialCommunityIcons name="image" size={40} color="#3B82F6" />
-              )}
-            </View>
-            <Text style={styles.optionTitle}>Upload Photo</Text>
-            <Text style={styles.optionDescription}>Choose from photo gallery</Text>
-          </TouchableOpacity>
+          </View>
         </View>
-
-        {/* Manual entry */}
-        <View style={styles.manualSection}>
-          <TouchableOpacity
-            onPress={() => router.push('/create-bill')}
-            style={styles.manualButton}
-          >
-            <MaterialCommunityIcons name="pencil" size={18} color="#0F172A" />
-            <Text style={styles.manualButtonText}>Enter manually</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -480,92 +542,109 @@ export default function ScanReceiptScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: Colors.background,
+  },
+  scrollView: {
+    flex: 1,
   },
   content: {
-    flex: 1,
-    padding: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 32,
     paddingTop: 8,
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#0F172A',
+    fontSize: 24,
+    fontWeight: '700',
+    color: Colors.text,
+    letterSpacing: -0.5,
   },
   illustration: {
     alignItems: 'center',
-    marginVertical: 40,
+    marginVertical: 32,
+  },
+  illustrationEmoji: {
+    fontSize: 80,
+    marginBottom: 16,
   },
   illustrationText: {
-    fontSize: 24,
-    fontWeight: '600',
-    color: '#0F172A',
-    marginTop: 16,
+    fontSize: 28,
+    fontWeight: '700',
+    color: Colors.text,
+    marginBottom: 8,
   },
   illustrationSubtext: {
     fontSize: 14,
-    color: '#64748B',
-    marginTop: 8,
-  },
-  optionsContainer: {
-    gap: 12,
-    marginBottom: 24,
-  },
-  optionCard: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    padding: 20,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  optionCardDisabled: {
-    opacity: 0.6,
-  },
-  optionIconContainer: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#EFF6FF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  optionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0F172A',
-    marginBottom: 4,
-  },
-  optionDescription: {
-    fontSize: 13,
-    color: '#64748B',
+    color: Colors.textSecondary,
     textAlign: 'center',
   },
-  manualSection: {
-    alignItems: 'center',
-    marginTop: 16,
+  optionsContainer: {
+    gap: 8,
+    marginBottom: 32,
   },
-  manualButton: {
+  optionButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 8,
+    justifyContent: 'space-between',
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    padding: 16,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: Colors.border,
   },
-  manualButtonText: {
-    fontSize: 14,
-    color: '#0F172A',
-    fontWeight: '500',
+  optionButtonDisabled: {
+    opacity: 0.6,
+  },
+  optionButtonLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  optionIcon: {
+    fontSize: 28,
+  },
+  optionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  optionDesc: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    marginTop: 2,
+  },
+  infoSection: {
+    marginTop: 16,
+    marginBottom: 32,
+  },
+  infoBox: {
+    flexDirection: 'row',
+    gap: 12,
+    backgroundColor: Colors.surfaceHighlight,
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  infoIcon: {
+    fontSize: 20,
+  },
+  infoTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.text,
+    marginBottom: 2,
+  },
+  infoText: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    lineHeight: 16,
   },
   // Camera styles
   camera: {
@@ -575,60 +654,89 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingTop: 16,
+    paddingTop: 12,
+    paddingBottom: 16,
     paddingHorizontal: 16,
-    backgroundColor: 'rgba(0,0,0,0.3)',
+    backgroundColor: 'rgba(0,0,0,0.5)',
   },
-  cameraTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: 'white',
-  },
-  closeButton: {
+  cameraCloseButton: {
     width: 40,
     height: 40,
     justifyContent: 'center',
     alignItems: 'center',
   },
+  cameraHeaderContent: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  cameraTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: 'white',
+    marginBottom: 2,
+  },
+  cameraSubtitle: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.7)',
+  },
   focusFrame: {
     flex: 1,
-    marginHorizontal: 20,
-    marginVertical: 40,
+    marginHorizontal: 32,
+    marginVertical: 48,
     borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.5)',
-    borderRadius: 8,
+    borderColor: 'rgba(212,244,120,0.6)',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  frameText: {
+    fontSize: 48,
+    opacity: 0.3,
   },
   cameraFooter: {
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
-    paddingVertical: 20,
-    backgroundColor: 'rgba(0,0,0,0.3)',
+    paddingVertical: 16,
+    paddingBottom: 24,
+    backgroundColor: 'rgba(0,0,0,0.5)',
   },
   captureButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(59, 130, 246, 0.9)',
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: Colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
   },
   captureButtonDisabled: {
-    opacity: 0.6,
+    opacity: 0.5,
   },
   captureButtonInner: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'white',
-  },
-  galleryButton: {
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: 'rgba(0,0,0,0.3)',
+    backgroundColor: Colors.primaryForeground,
+  },
+  galleryButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255,255,255,0.15)',
     justifyContent: 'center',
     alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
+  },
+  galleryButtonText: {
+    color: 'white',
+    fontSize: 11,
+    fontWeight: '500',
   },
   loadingOverlay: {
     position: 'absolute',
@@ -636,138 +744,181 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.8)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   loadingText: {
     color: 'white',
-    marginTop: 12,
+    marginTop: 16,
     fontSize: 14,
+    fontWeight: '500',
   },
   loadingSubtext: {
-    color: 'rgba(255,255,255,0.7)',
-    marginTop: 6,
+    color: 'rgba(255,255,255,0.6)',
+    marginTop: 4,
     fontSize: 12,
   },
   // Results styles
-  resultsCard: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
   confidenceBadge: {
     alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
-    marginBottom: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    marginBottom: 20,
+  },
+  confidenceEmoji: {
+    fontSize: 16,
   },
   confidenceText: {
     color: 'white',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  itemsCount: {
-    fontSize: 14,
-    color: '#64748B',
-    marginBottom: 8,
-  },
-  totalAmount: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#0F172A',
-    marginBottom: 12,
-  },
-  detailsGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginBottom: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-  },
-  detailItem: {
-    alignItems: 'center',
-  },
-  detailLabel: {
-    fontSize: 12,
-    color: '#64748B',
-    marginBottom: 4,
-  },
-  detailValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#0F172A',
-  },
-  itemsPreview: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-  },
-  previewTitle: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#0F172A',
+  },
+  totalCard: {
+    backgroundColor: Colors.surfaceHighlight,
+    borderRadius: 12,
+    padding: 20,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+  },
+  totalLabel: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontWeight: '500',
+    marginBottom: 6,
+  },
+  totalAmount: {
+    fontSize: 40,
+    fontWeight: '700',
+    color: Colors.primary,
     marginBottom: 8,
   },
-  itemPreview: {
+  itemCountText: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+  },
+  breakdownCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  breakdownRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 4,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
   },
-  itemName: {
-    fontSize: 12,
-    color: '#0F172A',
+  breakdownLabel: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+  },
+  breakdownValue: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  itemsCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  itemsTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.text,
+    marginBottom: 12,
+  },
+  itemRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  itemRowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
     flex: 1,
   },
-  itemDetails: {
+  itemQty: {
     fontSize: 12,
-    color: '#64748B',
+    fontWeight: '600',
+    color: Colors.primary,
+    minWidth: 24,
   },
-  moreItems: {
+  itemName: {
+    fontSize: 13,
+    color: Colors.text,
+    flex: 1,
+  },
+  itemPrice: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.text,
+    minWidth: 50,
+    textAlign: 'right',
+  },
+  moreCountText: {
     fontSize: 12,
-    color: '#3B82F6',
+    color: Colors.primary,
     fontWeight: '500',
-    marginTop: 4,
+    marginTop: 8,
   },
-  actions: {
+  bottomActions: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    paddingBottom: 24,
+    backgroundColor: Colors.background,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
   },
   primaryButton: {
     flex: 1,
-    backgroundColor: '#3B82F6',
-    borderRadius: 12,
-    paddingVertical: 14,
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+    paddingVertical: 12,
     justifyContent: 'center',
     alignItems: 'center',
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
   },
   primaryButtonText: {
-    color: 'white',
-    fontSize: 16,
+    color: Colors.primaryForeground,
+    fontSize: 15,
     fontWeight: '600',
   },
   secondaryButton: {
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 12,
-    paddingVertical: 14,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    borderRadius: 10,
+    paddingVertical: 12,
     paddingHorizontal: 16,
     justifyContent: 'center',
     alignItems: 'center',
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
   },
   secondaryButtonText: {
-    color: '#0F172A',
-    fontSize: 16,
+    color: Colors.text,
+    fontSize: 15,
     fontWeight: '600',
   },
 });

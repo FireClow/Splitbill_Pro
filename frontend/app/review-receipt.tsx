@@ -577,13 +577,13 @@ export default function ReviewReceiptScreen() {
                             </Text>
                             <View style={styles.itemQuantity}>
                               <Text style={styles.quantityText}>
-                                {item.quantity}x @ {data.currency} {item.price.toFixed(2)}
+                                {item.quantity}x @ {data.currency} {item.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                               </Text>
                             </View>
                           </View>
                           <View style={styles.itemTotal}>
                             <Text style={styles.itemTotalAmount}>
-                              {(item.quantity * item.price).toFixed(2)}
+                              {(item.quantity * item.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </Text>
                           </View>
                         </TouchableOpacity>
@@ -639,19 +639,19 @@ export default function ReviewReceiptScreen() {
               <View style={styles.summaryCard}>
                 <View style={styles.summaryRow}>
                   <Text style={styles.summaryLabel}>Subtotal</Text>
-                  <Text style={styles.summaryValue}>{data.subtotal.toFixed(2)}</Text>
+                  <Text style={styles.summaryValue}>{data.subtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
                 </View>
                 <View style={styles.summaryRow}>
                   <Text style={styles.summaryLabel}>Tax</Text>
-                  <Text style={styles.summaryValue}>{data.tax.toFixed(2)}</Text>
+                  <Text style={styles.summaryValue}>{data.tax.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
                 </View>
                 <View style={styles.summaryRow}>
                   <Text style={styles.summaryLabel}>Service</Text>
-                  <Text style={styles.summaryValue}>{data.service_charge.toFixed(2)}</Text>
+                  <Text style={styles.summaryValue}>{data.service_charge.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
                 </View>
                 <View style={[styles.summaryRow, styles.totalRow]}>
                   <Text style={styles.totalLabel}>Total</Text>
-                  <Text style={styles.totalValue}>{data.total.toFixed(2)}</Text>
+                  <Text style={styles.totalValue}>{data.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
                 </View>
               </View>
             </ScrollView>
@@ -747,7 +747,7 @@ export default function ReviewReceiptScreen() {
                   <View style={styles.subtotalBox}>
                     <Text style={styles.subtotalLabel}>Subtotal</Text>
                     <Text style={styles.subtotalValue}>
-                      {data.currency} {(editingItem.quantity * editingItem.price).toFixed(2)}
+                      {data.currency} {(editingItem.quantity * editingItem.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </Text>
                   </View>
                 </>
@@ -832,7 +832,7 @@ export default function ReviewReceiptScreen() {
               <View style={styles.subtotalBox}>
                 <Text style={styles.subtotalLabel}>Subtotal</Text>
                 <Text style={styles.subtotalValue}>
-                  {data.currency} {(newItem.quantity * newItem.price).toFixed(2)}
+                  {data.currency} {(newItem.quantity * newItem.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </Text>
               </View>
             </ScrollView>

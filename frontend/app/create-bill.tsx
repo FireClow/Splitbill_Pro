@@ -90,6 +90,35 @@ export default function CreateBillScreen() {
   };
   const removeParticipant = (i: number) => setParticipants(participants.filter((_, idx) => idx !== i));
 
+  // Check if user's own name is in participants
+  const userNameAdded = user?.name && participants.some(p => p.name.toLowerCase() === user.name.toLowerCase());
+
+  // Validate current step
+  const validateStep = (currentStep: number): string | null => {
+    if (currentStep === 0) { // Details
+      if (!title.trim()) return 'Please enter a bill title';
+      return null;
+    }
+    if (currentStep === 1) { // Items
+      const validItems = items.filter(i => i.name.trim() && parseFloat(i.price) > 0);
+      if (validItems.length === 0) return 'Please add at least one item with name and price';
+      return null;
+    }
+    if (currentStep === 2) { // People
+      if (participants.length === 0) return 'Please add at least one person (including yourself)';
+      return null;
+    }
+    return null;
+  };
+
+  const canProceed = validateStep(step) === null;
+  const stepError = validateStep(step);
+
+  // Format currency with thousand separator
+  const formatCurrency = (amount: number) => {
+    return amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
   const subtotal = items.reduce((sum, item) => {
     const p = parseFloat(item.price) || 0;
     const q = parseInt(item.quantity) || 1;
@@ -106,6 +135,7 @@ export default function CreateBillScreen() {
     if (!title.trim()) { Alert.alert('Error', 'Please enter a bill title'); return; }
     const validItems = items.filter(i => i.name.trim() && parseFloat(i.price) > 0);
     if (validItems.length === 0) { Alert.alert('Error', 'Please add at least one item'); return; }
+    if (participants.length === 0) { Alert.alert('Error', 'Please add at least one person (including yourself)'); return; }
 
     setSaving(true);
     try {
@@ -225,7 +255,15 @@ export default function CreateBillScreen() {
           {step === 2 && (
             <View style={styles.stepContent}>
               <Text style={styles.stepTitle}>Add People</Text>
-              <Text style={styles.stepSubtitle}>You&apos;re automatically added as the bill owner</Text>
+              <View style={styles.subtitleRow}>
+                <Text style={styles.stepSubtitle}>Add yourself and other people sharing this bill</Text>
+                {userNameAdded && (
+                  <View style={styles.statusBadge}>
+                    <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
+                    <Text style={styles.statusText}>Your name added</Text>
+                  </View>
+                )}
+              </View>
               <View style={styles.addParticipantRow}>
                 <TextInput testID="participant-name-input" style={[styles.input, { flex: 1, marginBottom: 0 }]} placeholder="Person name" placeholderTextColor={Colors.muted} value={newParticipantName} onChangeText={setNewParticipantName} onSubmitEditing={addParticipant} />
                 <TouchableOpacity testID="add-participant-btn" style={styles.addParticipantBtn} onPress={addParticipant}>
@@ -268,35 +306,35 @@ export default function CreateBillScreen() {
                 {items.filter(i => i.name && parseFloat(i.price) > 0).map((item, i) => (
                   <View key={i} style={styles.reviewItem}>
                     <Text style={styles.reviewItemName}>{item.name} x{item.quantity || 1}</Text>
-                    <Text style={styles.reviewItemPrice}>{currency} {(parseFloat(item.price) * (parseInt(item.quantity) || 1)).toFixed(2)}</Text>
+                    <Text style={styles.reviewItemPrice}>{currency} {formatCurrency(parseFloat(item.price) * (parseInt(item.quantity) || 1))}</Text>
                   </View>
                 ))}
                 <View style={styles.reviewDivider} />
                 <View style={styles.reviewItem}>
                   <Text style={styles.reviewLabel}>SUBTOTAL</Text>
-                  <Text style={styles.reviewValue}>{currency} {subtotal.toFixed(2)}</Text>
+                  <Text style={styles.reviewValue}>{currency} {formatCurrency(subtotal)}</Text>
                 </View>
                 {taxAmount > 0 && (
                   <View style={styles.reviewItem}>
                     <Text style={styles.reviewSmallLabel}>Tax</Text>
-                    <Text style={styles.reviewSmallValue}>{currency} {taxAmount.toFixed(2)}</Text>
+                    <Text style={styles.reviewSmallValue}>{currency} {formatCurrency(taxAmount)}</Text>
                   </View>
                 )}
                 {parseFloat(serviceCharge) > 0 && (
                   <View style={styles.reviewItem}>
                     <Text style={styles.reviewSmallLabel}>Service Charge</Text>
-                    <Text style={styles.reviewSmallValue}>{currency} {parseFloat(serviceCharge).toFixed(2)}</Text>
+                    <Text style={styles.reviewSmallValue}>{currency} {formatCurrency(parseFloat(serviceCharge))}</Text>
                   </View>
                 )}
                 <View style={styles.reviewDivider} />
                 <View style={styles.reviewItem}>
                   <Text style={styles.totalLabel}>TOTAL</Text>
-                  <Text style={styles.totalValue}>{currency} {total.toFixed(2)}</Text>
+                  <Text style={styles.totalValue}>{currency} {formatCurrency(total)}</Text>
                 </View>
               </View>
               <View style={styles.reviewCard}>
-                <Text style={styles.reviewLabel}>PARTICIPANTS ({participants.length + 1})</Text>
-                <Text style={styles.reviewSmallValue}>You + {participants.length} others</Text>
+                <Text style={styles.reviewLabel}>PARTICIPANTS ({participants.length})</Text>
+                <Text style={styles.reviewSmallValue}>{participants.map(p => p.name).join(', ')}</Text>
                 <View style={styles.reviewDivider} />
                 <Text style={styles.reviewLabel}>SPLIT METHOD</Text>
                 <Text style={styles.reviewSmallValue}>{splitMethod === 'equal' ? 'Equal' : splitMethod === 'per_item' ? 'By Item' : splitMethod === 'percentage' ? 'Percentage' : 'Custom'}</Text>
@@ -306,6 +344,12 @@ export default function CreateBillScreen() {
         </ScrollView>
 
         <View style={styles.bottomBar}>
+          {stepError && (
+            <View style={styles.errorBox}>
+              <Ionicons name="alert-circle" size={18} color={Colors.error} />
+              <Text style={styles.errorText}>{stepError}</Text>
+            </View>
+          )}
           {step > 0 && (
             <TouchableOpacity testID="prev-step-btn" style={styles.prevBtn} onPress={() => setStep(step - 1)}>
               <Ionicons name="arrow-back" size={20} color={Colors.white} />
@@ -314,17 +358,17 @@ export default function CreateBillScreen() {
           )}
           <TouchableOpacity
             testID={step < 3 ? 'next-step-btn' : 'save-bill-btn'}
-            style={[styles.nextBtn, step === 0 && { flex: 1 }]}
-            onPress={step < 3 ? () => setStep(step + 1) : handleSave}
-            disabled={saving}
+            style={[styles.nextBtn, step === 0 && { flex: 1 }, (!canProceed && step < 3) && styles.nextBtnDisabled]}
+            onPress={step < 3 ? () => { if (canProceed) setStep(step + 1); } : handleSave}
+            disabled={saving || (!canProceed && step < 3)}
             activeOpacity={0.8}
           >
             {saving ? (
               <ActivityIndicator size="small" color={Colors.primaryForeground} />
             ) : (
               <>
-                <Text style={styles.nextBtnText}>{step < 3 ? 'Continue' : 'Create Bill'}</Text>
-                {step < 3 && <Ionicons name="arrow-forward" size={20} color={Colors.primaryForeground} />}
+                <Text style={[styles.nextBtnText, (!canProceed && step < 3) && styles.nextBtnTextDisabled]}>{step < 3 ? 'Continue' : 'Create Bill'}</Text>
+                {step < 3 && <Ionicons name="arrow-forward" size={20} color={(!canProceed && step < 3) ? Colors.muted : Colors.primaryForeground} />}
               </>
             )}
           </TouchableOpacity>
@@ -400,4 +444,11 @@ const styles = StyleSheet.create({
   prevBtnText: { fontSize: 16, fontWeight: '600', color: Colors.white },
   nextBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 56, borderRadius: 100, backgroundColor: Colors.primary },
   nextBtnText: { fontSize: 16, fontWeight: '600', color: Colors.primaryForeground, letterSpacing: 0.5 },
+  nextBtnDisabled: { opacity: 0.5 },
+  nextBtnTextDisabled: { opacity: 0.6 },
+  errorBox: { flexDirection: 'row', gap: 8, padding: 12, backgroundColor: Colors.error + '15', borderRadius: 8, marginBottom: 12, alignItems: 'center' },
+  errorText: { fontSize: 14, color: Colors.error, flex: 1 },
+  subtitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 12 },
+  statusBadge: { flexDirection: 'row', gap: 6, alignItems: 'center', backgroundColor: Colors.success + '15', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
+  statusText: { fontSize: 12, color: Colors.success, fontWeight: '600' },
 });

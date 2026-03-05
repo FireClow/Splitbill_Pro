@@ -40,6 +40,7 @@ export default function ProfileScreen() {
       icon: 'globe-outline',
       label: 'Currency Settings',
       sublabel: 'Manage default currency',
+      route: '/settings',
     },
     {
       icon: 'notifications-outline',

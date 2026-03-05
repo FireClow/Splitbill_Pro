@@ -23,6 +23,7 @@ interface DashboardStats {
   total_amount: number;
   outstanding: number;
   total_paid: number;
+  currency?: string; // Preferred currency from user settings
 }
 
 interface Bill {
@@ -91,7 +92,7 @@ export default function HomeScreen() {
   };
 
   const formatCurrency = (amount: number, currency: string = 'USD'): string => {
-    return `${currency} ${amount.toFixed(2)}`;
+    return `${currency} ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
   if (loading) {
@@ -145,7 +146,10 @@ export default function HomeScreen() {
         <View style={styles.statsGrid}>
           <View style={[styles.statCard, styles.statCardPrimary]}>
             <Text style={styles.statLabel}>OUTSTANDING</Text>
-            <Text style={styles.statValuePrimary}>${stats?.outstanding?.toFixed(2) || '0.00'}</Text>
+            <View style={styles.currencyRow}>
+              <Text style={styles.currencyCode}>{stats?.currency || 'USD'}</Text>
+              <Text style={styles.statValuePrimary}>{(stats?.outstanding || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+            </View>
             <Text style={styles.statSubtext}>{stats?.active_bills || 0} active bills</Text>
           </View>
           <View style={styles.statsRow}>
@@ -185,7 +189,7 @@ export default function HomeScreen() {
             onPress={() => router.push('/scan-receipt')}
           >
             <View style={styles.actionButtonIcon}>
-              <MaterialCommunityIcons name="camera" size={24} color="#10B981" />
+              <MaterialCommunityIcons name="camera" size={24} color={Colors.primary} />
             </View>
             <View style={styles.actionButtonContent}>
               <Text style={styles.actionButtonTitle}>Scan Receipt</Text>
@@ -346,6 +350,18 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginBottom: 8,
   },
+  currencyRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+  },
+  currencyCode: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.primary,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
   statValuePrimary: {
     fontSize: 36,
     fontWeight: '800',
@@ -502,7 +518,7 @@ const styles = StyleSheet.create({
   actionButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: Colors.secondary,
+    backgroundColor: Colors.surface,
     borderRadius: 12,
     padding: 12,
     gap: 12,

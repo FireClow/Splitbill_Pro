@@ -56,11 +56,22 @@ logger.setLevel(logging.INFO)
 class RateLimiter:
     def __init__(self):
         self.requests: Dict[str, list] = defaultdict(list)
-        self.limits = {
-            "default": (60, 60),      # 60 requests per 60 seconds
-            "auth": (10, 60),          # 10 auth attempts per 60 seconds
-            "create": (20, 60),        # 20 creates per 60 seconds
-        }
+        self.is_dev = os.environ.get('ENV', 'development').lower() in ('dev', 'development', 'local')
+        
+        if self.is_dev:
+            # Very lenient limits for development
+            self.limits = {
+                "default": (1000, 60),      # 1000 requests per 60 seconds
+                "auth": (1000, 60),         # 1000 auth attempts per 60 seconds
+                "create": (1000, 60),       # 1000 creates per 60 seconds
+            }
+        else:
+            # Strict limits for production
+            self.limits = {
+                "default": (60, 60),        # 60 requests per 60 seconds
+                "auth": (10, 60),           # 10 auth attempts per 60 seconds
+                "create": (20, 60),         # 20 creates per 60 seconds
+            }
 
     def is_allowed(self, key: str, category: str = "default") -> bool:
         max_requests, window = self.limits.get(category, self.limits["default"])
@@ -120,7 +131,16 @@ class UserOut(BaseModel):
     name: str
     picture: Optional[str] = None
     plan: str = "free"
+    preferred_currency: str = "USD"
     created_at: Optional[str] = None
+
+class UserPreferencesUpdate(BaseModel):
+    preferred_currency: str = Field(min_length=3, max_length=3)
+    
+    @field_validator("preferred_currency")
+    @classmethod
+    def validate_currency(cls, v: str) -> str:
+        return v.upper()
 
 class SessionExchange(BaseModel):
     session_id: str
@@ -300,6 +320,48 @@ async def log_audit(user_id: str, action: str, entity: str, entity_id: str, deta
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
+async def convert_currency(amount: float, from_currency: str, to_currency: str) -> float:
+    """Convert amount from one currency to another using cached exchange rates"""
+    if from_currency == to_currency:
+        return amount
+    
+    rate_doc = await db.exchange_rates.find_one({
+        "base_currency": from_currency.upper(),
+        "target_currency": to_currency.upper()
+    }, {"_id": 0})
+    
+    if rate_doc:
+        rate = rate_doc.get("rate", 1.0)
+    else:
+        # Try to fetch from API if not cached
+        try:
+            async with httpx.AsyncClient() as hc:
+                resp = await hc.get(
+                    f"https://api.frankfurter.dev/v1/latest?from={from_currency.upper()}&to={to_currency.upper()}",
+                    timeout=5
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                rate = data.get("rates", {}).get(to_currency.upper(), 1.0)
+                # Cache the result
+                await db.exchange_rates.update_one(
+                    {"base_currency": from_currency.upper(), "target_currency": to_currency.upper()},
+                    {"$set": {
+                        "base_currency": from_currency.upper(),
+                        "target_currency": to_currency.upper(),
+                        "rate": rate,
+                        "fetched_at": datetime.now(timezone.utc).isoformat()
+                    }},
+                    upsert=True
+                )
+            else:
+                rate = 1.0
+        except Exception as e:
+            logger.error(f"Currency conversion error: {e}")
+            rate = 1.0
+    
+    return round(amount * rate, 2)
+
 # ─── SPLIT CALCULATION ENGINE ─────────────────────────────────────
 
 def calculate_splits(bill: dict, method: str = "equal", custom_splits: dict = None, percentages: dict = None) -> list:
@@ -425,6 +487,7 @@ async def exchange_session(data: SessionExchange, response: Response):
         await db.users.insert_one({
             "user_id": user_id, "email": email, "name": name, "picture": picture,
             "plan": "free",
+            "preferred_currency": "USD",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat()
         })
@@ -438,11 +501,11 @@ async def exchange_session(data: SessionExchange, response: Response):
     response.set_cookie(key="session_token", value=session_token, httponly=True, secure=True, samesite="none", path="/", max_age=7 * 24 * 3600)
     await log_audit(user_id, "login", "user", user_id)
     user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-    return {"session_token": session_token, "user": {k: user_doc.get(k) for k in ["user_id", "email", "name", "picture", "plan"]}}
+    return {"session_token": session_token, "user": {k: user_doc.get(k) for k in ["user_id", "email", "name", "picture", "plan", "preferred_currency"]}}
 
 @api_router.get("/auth/me")
 async def get_me(user: dict = Depends(get_current_user)):
-    return UserOut(**{k: user.get(k) for k in ["user_id", "email", "name", "picture", "plan", "created_at"] if k in user})
+    return UserOut(**{k: user.get(k) for k in ["user_id", "email", "name", "picture", "plan", "preferred_currency", "created_at"] if k in user or k == "preferred_currency"})
 
 @api_router.post("/auth/logout")
 async def logout(request: Request, response: Response):
@@ -454,6 +517,30 @@ async def logout(request: Request, response: Response):
         await db.user_sessions.delete_one({"session_token": token})
     response.delete_cookie("session_token", path="/")
     return {"message": "Logged out"}
+
+# ─── USER PREFERENCES ──────────────────────────────────────────────
+
+@api_router.get("/user/preferences")
+async def get_user_preferences(user: dict = Depends(get_current_user)):
+    """Get user preferences including preferred currency"""
+    return {
+        "user_id": user["user_id"],
+        "preferred_currency": user.get("preferred_currency", "USD"),
+    }
+
+@api_router.put("/user/preferences")
+async def update_user_preferences(data: UserPreferencesUpdate, user: dict = Depends(get_current_user)):
+    """Update user preferences including preferred currency"""
+    update_data = {
+        "preferred_currency": data.preferred_currency,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": update_data})
+    await log_audit(user["user_id"], "update_preferences", "user", user["user_id"], f"preferred_currency={data.preferred_currency}")
+    return {
+        "user_id": user["user_id"],
+        "preferred_currency": data.preferred_currency,
+    }
 
 # ─── SUBSCRIPTION ENDPOINTS ───────────────────────────────────────
 
@@ -801,52 +888,139 @@ async def view_shared_bill(token: str):
 @api_router.get("/dashboard/stats")
 async def get_dashboard_stats(user: dict = Depends(get_current_user)):
     bills = await db.bills.find({"owner_id": user["user_id"]}, {"_id": 0}).to_list(1000)
+    preferred_currency = user.get("preferred_currency", "USD")
+    
     total_bills = len(bills)
     active_bills = sum(1 for b in bills if b.get("status") == "active")
     settled_bills = sum(1 for b in bills if b.get("status") == "settled")
-    total_amount = sum(b.get("total_amount", 0) for b in bills)
-    total_owed = sum(s.get("amount_due", 0) for b in bills for s in b.get("splits", []))
-    total_paid = sum(s.get("amount_paid", 0) for b in bills for s in b.get("splits", []))
+    
+    # Convert all amounts to preferred currency
+    total_amount = 0.0
+    total_owed = 0.0
+    total_paid = 0.0
+    
+    for b in bills:
+        bill_currency = b.get("currency", "USD")
+        bill_total = b.get("total_amount", 0)
+        converted_total = await convert_currency(bill_total, bill_currency, preferred_currency)
+        total_amount += converted_total
+        
+        for s in b.get("splits", []):
+            amount_due = s.get("amount_due", 0)
+            amount_paid = s.get("amount_paid", 0)
+            converted_due = await convert_currency(amount_due, bill_currency, preferred_currency)
+            converted_paid = await convert_currency(amount_paid, bill_currency, preferred_currency)
+            total_owed += converted_due
+            total_paid += converted_paid
+    
     return {
         "total_bills": total_bills, "active_bills": active_bills, "settled_bills": settled_bills,
         "total_amount": round(total_amount, 2), "total_owed": round(total_owed, 2),
         "total_paid": round(total_paid, 2), "outstanding": round(total_owed - total_paid, 2),
+        "currency": preferred_currency,
         "plan": user.get("plan", "free")
     }
 
 # ─── ANALYTICS ENDPOINTS (Pro-gated) ──────────────────────────────
 
 @api_router.get("/analytics/spending")
-async def analytics_spending(user: dict = Depends(get_current_user), months: int = Query(6, ge=1, le=24)):
+async def analytics_spending(user: dict = Depends(get_current_user), month: str = Query(None)):
     plan = user.get("plan", "free")
     is_pro = plan == "pro"
+    preferred_currency = user.get("preferred_currency", "USD")
+    
+    # Use requested month or current month
+    if not month:
+        now = datetime.now(timezone.utc)
+        month = now.strftime("%Y-%m")
+    
     bills = await db.bills.find({"owner_id": user["user_id"]}, {"_id": 0}).to_list(5000)
-    monthly = defaultdict(float)
+    
+    # Initialize weekly spending for selected month
+    weekly_spending = {
+        "1-7": 0.0,
+        "8-14": 0.0,
+        "15-21": 0.0,
+        "22-28": 0.0,
+        "29-31": 0.0,
+    }
+    
     for b in bills:
         created = b.get("created_at", "")
-        if isinstance(created, str) and len(created) >= 7:
-            month_key = created[:7]
-            monthly[month_key] += b.get("total_amount", 0)
-    sorted_months = sorted(monthly.items(), reverse=True)[:months]
-    result = [{"month": m, "total": round(t, 2)} for m, t in sorted_months]
-    if not is_pro and len(result) > 2:
-        result = result[:2] + [{"month": r["month"], "total": None, "locked": True} for r in result[2:]]
-    return {"spending": result, "is_pro": is_pro}
+        if isinstance(created, str) and len(created) >= 10:
+            try:
+                # Parse date: YYYY-MM-DD
+                bill_date_str = created.split('T')[0]
+                bill_date = datetime.fromisoformat(bill_date_str)
+                bill_month = bill_date_str[:7]  # YYYY-MM
+                
+                # Only count bills from selected month
+                if bill_month == month:
+                    day_of_month = bill_date.day
+                    
+                    # Determine week range
+                    if day_of_month <= 7:
+                        week_range = "1-7"
+                    elif day_of_month <= 14:
+                        week_range = "8-14"
+                    elif day_of_month <= 21:
+                        week_range = "15-21"
+                    elif day_of_month <= 28:
+                        week_range = "22-28"
+                    else:
+                        week_range = "29-31"
+                    
+                    bill_currency = b.get("currency", "USD")
+                    bill_amount = b.get("total_amount", 0)
+                    converted_amount = await convert_currency(bill_amount, bill_currency, preferred_currency)
+                    weekly_spending[week_range] += converted_amount
+            except (ValueError, IndexError):
+                continue
+    
+    # Format result with all 5 weeks
+    result = [
+        {"dateRange": "1-7", "total": round(weekly_spending["1-7"], 2)},
+        {"dateRange": "8-14", "total": round(weekly_spending["8-14"], 2)},
+        {"dateRange": "15-21", "total": round(weekly_spending["15-21"], 2)},
+        {"dateRange": "22-28", "total": round(weekly_spending["22-28"], 2)},
+        {"dateRange": "29-31", "total": round(weekly_spending["29-31"], 2)},
+    ]
+    
+    if not is_pro:
+        result = [{"dateRange": r["dateRange"], "total": None, "locked": True} for r in result]
+    
+    return {"spending": result, "is_pro": is_pro, "currency": preferred_currency, "month": month}
 
 @api_router.get("/analytics/currencies")
 async def analytics_currencies(user: dict = Depends(get_current_user)):
     plan = user.get("plan", "free")
+    preferred_currency = user.get("preferred_currency", "USD")
+    
     bills = await db.bills.find({"owner_id": user["user_id"]}, {"_id": 0, "currency": 1, "total_amount": 1}).to_list(5000)
     currency_totals: Dict[str, float] = defaultdict(float)
     for b in bills:
-        currency_totals[b.get("currency", "USD")] += b.get("total_amount", 0)
+        bill_currency = b.get("currency", "USD")
+        bill_amount = b.get("total_amount", 0)
+        # Convert to preferred currency
+        converted_amount = await convert_currency(bill_amount, bill_currency, preferred_currency)
+        # Still show the breakdown by original currency
+        currency_totals[bill_currency] += converted_amount
     result = [{"currency": c, "total": round(t, 2)} for c, t in sorted(currency_totals.items(), key=lambda x: -x[1])]
-    return {"currencies": result, "is_pro": plan == "pro"}
+    return {"currencies": result, "is_pro": plan == "pro", "preferred_currency": preferred_currency}
 
 @api_router.get("/analytics/summary")
 async def analytics_summary(user: dict = Depends(get_current_user)):
     bills = await db.bills.find({"owner_id": user["user_id"]}, {"_id": 0}).to_list(5000)
-    total_spent = sum(b.get("total_amount", 0) for b in bills)
+    preferred_currency = user.get("preferred_currency", "USD")
+    
+    # Convert all amounts to preferred currency
+    total_spent = 0.0
+    for b in bills:
+        bill_currency = b.get("currency", "USD")
+        bill_amount = b.get("total_amount", 0)
+        converted_amount = await convert_currency(bill_amount, bill_currency, preferred_currency)
+        total_spent += converted_amount
+    
     avg_bill = total_spent / len(bills) if bills else 0
     total_participants = sum(len(b.get("participants", [])) for b in bills)
     top_currencies = defaultdict(int)
@@ -859,6 +1033,7 @@ async def analytics_summary(user: dict = Depends(get_current_user)):
         "average_bill": round(avg_bill, 2),
         "total_participants": total_participants,
         "most_used_currency": most_used_currency,
+        "preferred_currency": preferred_currency,
         "plan": user.get("plan", "free")
     }
 

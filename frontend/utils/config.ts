@@ -16,10 +16,20 @@ const PROD_API_URL = 'https://api.splitbill.com';
 // Environment detection
 const isDevelopment = __DEV__;
 
+// Determine the correct host based on platform
+const getDevApiHost = () => {
+  if (Platform.OS === 'web') {
+    // For web browser, always use localhost
+    return 'localhost';
+  }
+  // For mobile (Expo Go), use network IP
+  return DEV_API_IP;
+};
+
 export const API_CONFIG = {
   // Base URL for API calls
   baseURL: isDevelopment 
-    ? `http://${DEV_API_IP}:${DEV_API_PORT}`
+    ? `http://${getDevApiHost()}:${DEV_API_PORT}`
     : PROD_API_URL,
 
   // API endpoints

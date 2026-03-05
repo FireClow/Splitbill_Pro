@@ -1,8 +1,9 @@
 # Virtual environments
-.venv_37/
-.venv_run/
-venv/
+.venv*/
+venv*/
 env/
+backend/.venv*/
+backend/venv*/
 
 # Node modules
 node_modules/
@@ -29,6 +30,8 @@ __pycache__/
 .env
 .env.local
 *.log
+debug_logs/
+test_reports/
 
 # System
 .DS_Store

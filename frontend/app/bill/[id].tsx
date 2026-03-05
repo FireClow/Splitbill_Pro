@@ -17,6 +17,8 @@ export default function BillDetailScreen() {
   const [newItemPrice, setNewItemPrice] = useState('');
   const [newPersonName, setNewPersonName] = useState('');
   const [shareLoading, setShareLoading] = useState(false);
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [editingItemAssignedTo, setEditingItemAssignedTo] = useState<string[]>([]);
 
   const loadBill = useCallback(async () => {
     if (!id) return;
@@ -109,6 +111,31 @@ export default function BillDetailScreen() {
     } catch (err: any) { Alert.alert('Error', err.message); }
   };
 
+  const handleEditItemAssignedTo = (itemId: string, currentAssignedTo: string[]) => {
+    setEditingItemId(itemId);
+    setEditingItemAssignedTo([...currentAssignedTo]);
+  };
+
+  const handleToggleParticipantForItem = (participantId: string) => {
+    setEditingItemAssignedTo(prev =>
+      prev.includes(participantId)
+        ? prev.filter(id => id !== participantId)
+        : [...prev, participantId]
+    );
+  };
+
+  const handleSaveItemAssignedTo = async () => {
+    if (!editingItemId) return;
+    try {
+      const updated = await api.updateItem(id!, editingItemId, { assigned_to: editingItemAssignedTo });
+      setBill(updated);
+      setEditingItemId(null);
+      setEditingItemAssignedTo([]);
+    } catch (err: any) { 
+      Alert.alert('Error', err.message); 
+    }
+  };
+
   if (loading || !bill) {
     return (
       <SafeAreaView style={styles.container}>
@@ -149,22 +176,22 @@ export default function BillDetailScreen() {
 
         <View style={styles.totalCard}>
           <Text style={styles.totalLabel}>TOTAL AMOUNT</Text>
-          <Text style={styles.totalAmount}>{bill.currency} {bill.total_amount?.toFixed(2)}</Text>
+          <Text style={styles.totalAmount}>{bill.currency} {(bill.total_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
           <View style={styles.totalBreakdown}>
             <View style={styles.breakdownItem}>
               <Text style={styles.breakdownLabel}>Subtotal</Text>
-              <Text style={styles.breakdownValue}>{bill.subtotal?.toFixed(2)}</Text>
+              <Text style={styles.breakdownValue}>{(bill.subtotal || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
             </View>
             {bill.tax_amount > 0 && (
               <View style={styles.breakdownItem}>
                 <Text style={styles.breakdownLabel}>Tax</Text>
-                <Text style={styles.breakdownValue}>{bill.tax_amount?.toFixed(2)}</Text>
+                <Text style={styles.breakdownValue}>{(bill.tax_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
               </View>
             )}
             {bill.service_charge > 0 && (
               <View style={styles.breakdownItem}>
                 <Text style={styles.breakdownLabel}>Service</Text>
-                <Text style={styles.breakdownValue}>{bill.service_charge?.toFixed(2)}</Text>
+                <Text style={styles.breakdownValue}>{(bill.service_charge || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
               </View>
             )}
           </View>
@@ -194,17 +221,72 @@ export default function BillDetailScreen() {
             </View>
           )}
           {bill.items?.map((item: any) => (
-            <View key={item.item_id} style={styles.itemRow}>
-              <View style={styles.itemInfo}>
-                <Text style={styles.itemName}>{item.name}</Text>
-                <Text style={styles.itemQty}>x{item.quantity}</Text>
+            <View key={item.item_id}>
+              <View style={styles.itemRow}>
+                <View style={styles.itemInfo}>
+                  <Text style={styles.itemName}>{item.name}</Text>
+                  <Text style={styles.itemQty}>x{item.quantity}</Text>
+                </View>
+                <View style={styles.itemActions}>
+                  <Text style={styles.itemPrice}>{bill.currency} {((item.price * item.quantity) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                  {bill.split_method === 'per_item' && (
+                    <TouchableOpacity testID={`edit-item-${item.item_id}`} onPress={() => handleEditItemAssignedTo(item.item_id, item.assigned_to || [])} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                      <Ionicons name="people-outline" size={18} color={Colors.primary} />
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity testID={`delete-item-${item.item_id}`} onPress={() => handleDeleteItem(item.item_id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Ionicons name="close-circle-outline" size={18} color={Colors.muted} />
+                  </TouchableOpacity>
+                </View>
               </View>
-              <View style={styles.itemActions}>
-                <Text style={styles.itemPrice}>{bill.currency} {(item.price * item.quantity).toFixed(2)}</Text>
-                <TouchableOpacity testID={`delete-item-${item.item_id}`} onPress={() => handleDeleteItem(item.item_id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Ionicons name="close-circle-outline" size={18} color={Colors.muted} />
-                </TouchableOpacity>
-              </View>
+
+              {/* Show assigned participants if split by item */}
+              {bill.split_method === 'per_item' && item.assigned_to && item.assigned_to.length > 0 && (
+                <View style={styles.itemAssignedInfo}>
+                  <Text style={styles.assignedInfoLabel}>Split among:</Text>
+                  <View style={styles.assignedInfoTags}>
+                    {item.assigned_to.map((participantId: string) => {
+                      const participant = bill.participants.find((p: any) => p.participant_id === participantId);
+                      return participant ? (
+                        <View key={participantId} style={styles.assignedTag}>
+                          <Text style={styles.assignedTagText}>{participant.name}</Text>
+                        </View>
+                      ) : null;
+                    })}
+                  </View>
+                </View>
+              )}
+
+              {/* Editing mode - select participants */}
+              {editingItemId === item.item_id && (
+                <View style={styles.itemEditSection}>
+                  <Text style={styles.editSectionTitle}>Select who pays for this item:</Text>
+                  {bill.participants?.map((participant: any) => (
+                    <TouchableOpacity
+                      key={participant.participant_id}
+                      style={styles.participantCheckRow}
+                      onPress={() => handleToggleParticipantForItem(participant.participant_id)}
+                    >
+                      <View style={styles.checkboxContainer}>
+                        <View style={[styles.checkbox, editingItemAssignedTo.includes(participant.participant_id) && styles.checkboxChecked]}>
+                          {editingItemAssignedTo.includes(participant.participant_id) && (
+                            <Ionicons name="checkmark" size={14} color={Colors.white} />
+                          )}
+                        </View>
+                      </View>
+                      <Text style={styles.participantCheckLabel}>{participant.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                  <View style={styles.editActionRow}>
+                    <TouchableOpacity style={[styles.editBtn, styles.editBtnCancel]} onPress={() => setEditingItemId(null)}>
+                      <Text style={styles.editBtnText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.editBtn, styles.editBtnSave]} onPress={handleSaveItemAssignedTo}>
+                      <Text style={[styles.editBtnText, { color: Colors.primaryForeground }]}>Save</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
             </View>
           ))}
         </View>
@@ -256,33 +338,80 @@ export default function BillDetailScreen() {
               </TouchableOpacity>
             ))}
           </View>
-          {bill.splits?.map((split: any) => (
-            <TouchableOpacity
-              key={split.participant_id}
-              testID={`split-${split.participant_id}`}
-              style={styles.splitCard}
-              onPress={() => handleTogglePayment(split)}
-              activeOpacity={0.7}
-            >
-              <View style={styles.splitLeft}>
-                <View style={[styles.splitAvatar, split.status === 'paid' && styles.splitAvatarPaid]}>
-                  <Text style={styles.splitAvatarText}>{split.participant_name?.[0]?.toUpperCase() || '?'}</Text>
+
+          {/* Items breakdown when split by item */}
+          {bill.split_method === 'per_item' && bill.items && bill.items.length > 0 && (
+            <View style={styles.itemsBreakdownSection}>
+              <Text style={styles.itemsBreakdownTitle}>Items Breakdown</Text>
+              {bill.items.map((item: any) => {
+                const assignedParticipants = item.assigned_to && item.assigned_to.length > 0 
+                  ? bill.participants.filter((p: any) => item.assigned_to.includes(p.participant_id))
+                  : bill.participants;
+                
+                const itemTotal = item.price * item.quantity;
+                const perPersonAmount = assignedParticipants.length > 0 ? itemTotal / assignedParticipants.length : 0;
+
+                return (
+                  <View key={item.item_id} style={styles.itemBreakdownCard}>
+                    <View style={styles.itemBreakdownHeader}>
+                      <View style={styles.itemBreakdownInfo}>
+                        <Text style={styles.itemBreakdownName}>{item.name}</Text>
+                        <Text style={styles.itemBreakdownQty}>x{item.quantity} @ {bill.currency} {item.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                      </View>
+                      <Text style={styles.itemBreakdownTotal}>{bill.currency} {itemTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                    </View>
+                    
+                    <View style={styles.itemAssignedTo}>
+                      <Text style={styles.assignedLabel}>Split among:</Text>
+                      {assignedParticipants.map((p: any) => (
+                        <View key={p.participant_id} style={styles.assignedPersonRow}>
+                          <View style={styles.assignedPersonAvatar}>
+                            <Text style={styles.assignedPersonAvatarText}>{p.name[0].toUpperCase()}</Text>
+                          </View>
+                          <Text style={styles.assignedPersonName}>{p.name}</Text>
+                          <Text style={styles.assignedPersonAmount}>{bill.currency} {perPersonAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+
+          {/* Summary splits */}
+          <View style={bill.split_method === 'per_item' && bill.items && bill.items.length > 0 ? styles.splitSummarySection : {}}>
+            <Text style={bill.split_method === 'per_item' && bill.items && bill.items.length > 0 ? styles.splitSummaryTitle : { display: 'none' }}>
+              Total Per Person
+            </Text>
+            {bill.splits?.map((split: any) => (
+              <TouchableOpacity
+                key={split.participant_id}
+                testID={`split-${split.participant_id}`}
+                style={styles.splitCard}
+                onPress={() => handleTogglePayment(split)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.splitLeft}>
+                  <View style={[styles.splitAvatar, split.status === 'paid' && styles.splitAvatarPaid]}>
+                    <Text style={styles.splitAvatarText}>{split.participant_name?.[0]?.toUpperCase() || '?'}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.splitName}>{split.participant_name}</Text>
+                    <Text style={[styles.splitStatus, { color: split.status === 'paid' ? Colors.success : Colors.warning }]}>
+                      {split.status === 'paid' ? 'Paid' : 'Unpaid'}
+                    </Text>
+                  </View>
                 </View>
-                <View>
-                  <Text style={styles.splitName}>{split.participant_name}</Text>
-                  <Text style={[styles.splitStatus, { color: split.status === 'paid' ? Colors.success : Colors.warning }]}>
-                    {split.status === 'paid' ? 'Paid' : 'Unpaid'}
-                  </Text>
+                <View style={styles.splitRight}>
+                  <Text style={styles.splitAmount}>{bill.currency} {(split.amount_due || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                  <View style={[styles.paymentToggle, split.status === 'paid' && styles.paymentTogglePaid]}>
+                    <Ionicons name={split.status === 'paid' ? 'checkmark-circle' : 'ellipse-outline'} size={24} color={split.status === 'paid' ? Colors.success : Colors.muted} />
+                  </View>
                 </View>
-              </View>
-              <View style={styles.splitRight}>
-                <Text style={styles.splitAmount}>{bill.currency} {split.amount_due?.toFixed(2)}</Text>
-                <View style={[styles.paymentToggle, split.status === 'paid' && styles.paymentTogglePaid]}>
-                  <Ionicons name={split.status === 'paid' ? 'checkmark-circle' : 'ellipse-outline'} size={24} color={split.status === 'paid' ? Colors.success : Colors.muted} />
-                </View>
-              </View>
-            </TouchableOpacity>
-          ))}
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -345,4 +474,38 @@ const styles = StyleSheet.create({
   splitAmount: { fontSize: 18, fontWeight: '700', color: Colors.white },
   paymentToggle: { width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   paymentTogglePaid: { backgroundColor: Colors.success + '20' },
+  itemsBreakdownSection: { marginBottom: 24, paddingBottom: 24, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  itemsBreakdownTitle: { fontSize: 16, fontWeight: '600', color: Colors.white, marginBottom: 16 },
+  itemBreakdownCard: { backgroundColor: Colors.surface, borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: Colors.border },
+  itemBreakdownHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  itemBreakdownInfo: { flex: 1, marginRight: 12 },
+  itemBreakdownName: { fontSize: 16, fontWeight: '600', color: Colors.white, marginBottom: 4 },
+  itemBreakdownQty: { fontSize: 13, color: Colors.textMuted },
+  itemBreakdownTotal: { fontSize: 16, fontWeight: '700', color: Colors.primary },
+  itemAssignedTo: { gap: 8 },
+  assignedLabel: { fontSize: 12, fontWeight: '600', color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 },
+  assignedPersonRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 6 },
+  assignedPersonAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: Colors.surfaceHighlight, justifyContent: 'center', alignItems: 'center' },
+  assignedPersonAvatarText: { fontSize: 13, fontWeight: '600', color: Colors.white },
+  assignedPersonName: { flex: 1, fontSize: 14, fontWeight: '500', color: Colors.white },
+  assignedPersonAmount: { fontSize: 14, fontWeight: '600', color: Colors.primary },
+  splitSummarySection: { marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: Colors.border },
+  splitSummaryTitle: { fontSize: 14, fontWeight: '600', color: Colors.textMuted, marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
+  itemAssignedInfo: { paddingHorizontal: 16, paddingVertical: 10, backgroundColor: Colors.surfaceHighlight + '40', borderRadius: 12, marginBottom: 12 },
+  assignedInfoLabel: { fontSize: 11, fontWeight: '600', color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 },
+  assignedInfoTags: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  assignedTag: { backgroundColor: Colors.primary + '30', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: Colors.primary + '60' },
+  assignedTagText: { fontSize: 12, fontWeight: '500', color: Colors.primary },
+  itemEditSection: { paddingHorizontal: 16, paddingVertical: 12, backgroundColor: Colors.surface, borderTopWidth: 1, borderTopColor: Colors.border, marginTop: 8 },
+  editSectionTitle: { fontSize: 13, fontWeight: '600', color: Colors.white, marginBottom: 12 },
+  participantCheckRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border + '40' },
+  checkboxContainer: { marginRight: 12 },
+  checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 2, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center' },
+  checkboxChecked: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  participantCheckLabel: { fontSize: 14, fontWeight: '500', color: Colors.white, flex: 1 },
+  editActionRow: { flexDirection: 'row', gap: 8, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: Colors.border },
+  editBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
+  editBtnCancel: { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
+  editBtnSave: { backgroundColor: Colors.primary },
+  editBtnText: { fontSize: 13, fontWeight: '600', color: Colors.white },
 });

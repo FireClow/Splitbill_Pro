@@ -131,7 +131,7 @@ export default function BillsScreen() {
                   </Text>
                 </View>
                 <View style={styles.billRight}>
-                  <Text style={styles.billAmount}>{bill.currency} {bill.total_amount?.toFixed(2)}</Text>
+                  <Text style={styles.billAmount}>{bill.currency} {(bill.total_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
                   <View style={[styles.statusTag, { backgroundColor: getStatusColor(bill.status) + '20' }]}>
                     <Text style={[styles.statusTagText, { color: getStatusColor(bill.status) }]}>{bill.status}</Text>
                   </View>
