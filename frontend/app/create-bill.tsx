@@ -2,16 +2,32 @@ import { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { api } from '../utils/api';
+import { Ionicons } from '@expo/vector-icons';
+import { api, ApiError } from '../utils/api';
 import { Colors } from '../utils/colors';
 import { useAuth } from '../contexts/AuthContext';
 import { useInterstitialAd } from '../hooks/useInterstitialAd';
+import AssignItemsScreen from '../components/AssignItemsScreen';
 
-interface ItemDraft { name: string; price: string; quantity: string; }
-interface ParticipantDraft { name: string; contact_info: string; }
+interface ItemDraft {
+  id: string;
+  name: string;
+  price: string;
+  quantity: string;
+  assignedTo: string[];
+}
+
+interface ParticipantDraft {
+  id: string;
+  name: string;
+  contact_info: string;
+}
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'INR', 'SGD', 'KRW', 'MXN', 'BRL', 'THB', 'IDR', 'MYR'];
+
+const createId = (prefix: string): string => {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+};
 
 export default function CreateBillScreen() {
   const router = useRouter();
@@ -20,20 +36,21 @@ export default function CreateBillScreen() {
   const { trackBillCreation } = useInterstitialAd(user?.isPremium);
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [createBlockedReason, setCreateBlockedReason] = useState('');
 
   const [title, setTitle] = useState('');
   const [currency, setCurrency] = useState('USD');
   const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
 
-  const [items, setItems] = useState<ItemDraft[]>([{ name: '', price: '', quantity: '1' }]);
+  const [items, setItems] = useState<ItemDraft[]>([
+    { id: createId('item'), name: '', price: '', quantity: '1', assignedTo: [] },
+  ]);
   const [participants, setParticipants] = useState<ParticipantDraft[]>([]);
   const [newParticipantName, setNewParticipantName] = useState('');
 
   const [taxType, setTaxType] = useState<'percentage' | 'fixed'>('percentage');
   const [taxValue, setTaxValue] = useState('');
   const [serviceCharge, setServiceCharge] = useState('');
-  const [splitMethod, setSplitMethod] = useState('equal');
-  const [receiptImageId, setReceiptImageId] = useState<string | null>(null);
 
   // Load receipt data from scan if provided
   useEffect(() => {
@@ -44,9 +61,11 @@ export default function CreateBillScreen() {
         // Populate items
         if (receiptData.items && receiptData.items.length > 0) {
           setItems(receiptData.items.map((item: any) => ({
+            id: createId('item'),
             name: item.name,
             price: item.price.toString(),
             quantity: item.quantity.toString(),
+            assignedTo: [],
           })));
         }
         
@@ -65,17 +84,16 @@ export default function CreateBillScreen() {
           setServiceCharge(receiptData.service_charge.toString());
         }
         
-        // Save image ID for attachment
-        if (receiptData.image_id) {
-          setReceiptImageId(receiptData.image_id);
-        }
       } catch (error) {
         console.warn('Failed to parse receipt data:', error);
       }
     }
   }, [params.receiptData]);
 
-  const addItem = () => setItems([...items, { name: '', price: '', quantity: '1' }]);
+  const addItem = () => setItems([
+    ...items,
+    { id: createId('item'), name: '', price: '', quantity: '1', assignedTo: [] },
+  ]);
   const removeItem = (i: number) => setItems(items.filter((_, idx) => idx !== i));
   const updateItem = (i: number, field: keyof ItemDraft, value: string) => {
     const updated = [...items];
@@ -85,10 +103,40 @@ export default function CreateBillScreen() {
 
   const addParticipant = () => {
     if (!newParticipantName.trim()) return;
-    setParticipants([...participants, { name: newParticipantName.trim(), contact_info: '' }]);
+    setParticipants([
+      ...participants,
+      { id: createId('participant'), name: newParticipantName.trim(), contact_info: '' },
+    ]);
     setNewParticipantName('');
   };
-  const removeParticipant = (i: number) => setParticipants(participants.filter((_, idx) => idx !== i));
+  const removeParticipant = (i: number) => {
+    const participantId = participants[i]?.id;
+    setParticipants(participants.filter((_, idx) => idx !== i));
+
+    if (participantId) {
+      setItems(prevItems =>
+        prevItems.map(item => ({
+          ...item,
+          assignedTo: item.assignedTo.filter(pid => pid !== participantId),
+        }))
+      );
+    }
+  };
+
+  const toggleItemAssignment = (itemId: string, participantId: string) => {
+    setItems(prevItems =>
+      prevItems.map(item => {
+        if (item.id !== itemId) return item;
+        const alreadyAssigned = item.assignedTo.includes(participantId);
+        return {
+          ...item,
+          assignedTo: alreadyAssigned
+            ? item.assignedTo.filter(id => id !== participantId)
+            : [...item.assignedTo, participantId],
+        };
+      })
+    );
+  };
 
   // Check if user's own name is in participants
   const userNameAdded = user?.name && participants.some(p => p.name.toLowerCase() === user.name.toLowerCase());
@@ -106,6 +154,14 @@ export default function CreateBillScreen() {
     }
     if (currentStep === 2) { // People
       if (participants.length === 0) return 'Please add at least one person (including yourself)';
+      return null;
+    }
+    if (currentStep === 3) { // Assign
+      const validItems = items.filter(i => i.name.trim() && parseFloat(i.price) > 0);
+      const missingAssignment = validItems.find(i => i.assignedTo.length === 0);
+      if (missingAssignment) {
+        return 'Please assign this item to at least one participant.';
+      }
       return null;
     }
     return null;
@@ -131,36 +187,96 @@ export default function CreateBillScreen() {
 
   const total = subtotal + taxAmount + (parseFloat(serviceCharge) || 0);
 
+  useEffect(() => {
+    if (createBlockedReason) {
+      setCreateBlockedReason('');
+    }
+    // Clear blocked state whenever user changes bill data.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title, currency, items, participants, taxType, taxValue, serviceCharge]);
+
+  const calculateByItemShares = () => {
+    const shares: Record<string, number> = {};
+    participants.forEach(participant => {
+      shares[participant.id] = 0;
+    });
+
+    const validItems = items.filter(i => i.name.trim() && parseFloat(i.price) > 0);
+    validItems.forEach(item => {
+      if (!item.assignedTo.length) return;
+
+      const unitPrice = parseFloat(item.price) || 0;
+      const quantity = Math.max(parseInt(item.quantity, 10) || 1, 1);
+      const costPerUnit = (unitPrice * quantity) / quantity;
+      const lineShare = (costPerUnit * quantity) / item.assignedTo.length;
+
+      item.assignedTo.forEach(participantId => {
+        if (shares[participantId] !== undefined) {
+          shares[participantId] += lineShare;
+        }
+      });
+    });
+
+    return shares;
+  };
+
   const handleSave = async () => {
+    if (createBlockedReason) {
+      Alert.alert('Create Blocked', createBlockedReason);
+      return;
+    }
+
     if (!title.trim()) { Alert.alert('Error', 'Please enter a bill title'); return; }
     const validItems = items.filter(i => i.name.trim() && parseFloat(i.price) > 0);
     if (validItems.length === 0) { Alert.alert('Error', 'Please add at least one item'); return; }
     if (participants.length === 0) { Alert.alert('Error', 'Please add at least one person (including yourself)'); return; }
+    const hasUnassigned = validItems.some(i => i.assignedTo.length === 0);
+    if (hasUnassigned) {
+      Alert.alert('Warning', 'Please assign this item to at least one participant.');
+      return;
+    }
 
     setSaving(true);
     try {
       const billData = {
         title: title.trim(),
         currency,
-        items: validItems.map(i => ({ name: i.name.trim(), price: parseFloat(i.price), quantity: parseInt(i.quantity) || 1, assigned_to: [] })),
-        participants: participants.map(p => ({ name: p.name, contact_info: p.contact_info })),
+        items: validItems.map(i => ({
+          name: i.name.trim(),
+          price: parseFloat(i.price),
+          quantity: parseInt(i.quantity) || 1,
+          assigned_to: i.assignedTo,
+        })),
+        participants: participants.map(p => ({
+          name: p.name,
+          contact_info: p.contact_info,
+          client_id: p.id,
+        })),
         tax_type: taxType,
         tax_value: parseFloat(taxValue) || 0,
         service_charge: parseFloat(serviceCharge) || 0,
-        split_method: splitMethod,
+        // Product decision: keep create-bill simple, always split by item.
+        split_method: 'per_item',
       };
       const result = await api.createBill(billData);
       // Track this bill creation for ad frequency
       await trackBillCreation();
       router.replace(`/bill/${result.bill_id}`);
     } catch (err: any) {
+      if (err instanceof ApiError && err.status === 403 && err.message.includes('Active bill limit reached')) {
+        const msg = 'Active bill limit reached for this account. Settle/archive old bills or upgrade plan.';
+        setCreateBlockedReason(msg);
+        Alert.alert('Limit Reached', msg);
+        return;
+      }
       Alert.alert('Error', err.message || 'Failed to create bill');
     } finally {
       setSaving(false);
     }
   };
 
-  const steps = ['Details', 'Items', 'People', 'Review'];
+  const steps = ['Details', 'Items', 'People', 'Assign', 'Review'];
+  const byItemShares = calculateByItemShares();
 
   return (
     <SafeAreaView style={styles.container}>
@@ -281,21 +397,20 @@ export default function CreateBillScreen() {
                   </TouchableOpacity>
                 </View>
               ))}
-
-              <View style={styles.divider} />
-              <Text style={styles.subsectionTitle}>Split Method</Text>
-              {['equal', 'per_item', 'percentage', 'custom'].map(m => (
-                <TouchableOpacity key={m} testID={`split-method-${m}`} style={[styles.splitMethodItem, splitMethod === m && styles.splitMethodActive]} onPress={() => setSplitMethod(m)}>
-                  <Ionicons name={splitMethod === m ? 'radio-button-on' : 'radio-button-off'} size={22} color={splitMethod === m ? Colors.primary : Colors.muted} />
-                  <Text style={[styles.splitMethodText, splitMethod === m && styles.splitMethodTextActive]}>
-                    {m === 'equal' ? 'Equal Split' : m === 'per_item' ? 'Split by Item' : m === 'percentage' ? 'By Percentage' : 'Custom Amounts'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
             </View>
           )}
 
           {step === 3 && (
+            <AssignItemsScreen
+              items={items.filter(i => i.name.trim() && parseFloat(i.price) > 0)}
+              participants={participants}
+              currency={currency}
+              formatCurrency={formatCurrency}
+              onToggleAssignment={toggleItemAssignment}
+            />
+          )}
+
+          {step === 4 && (
             <View style={styles.stepContent}>
               <Text style={styles.stepTitle}>Review Bill</Text>
               <View style={styles.reviewCard}>
@@ -309,6 +424,25 @@ export default function CreateBillScreen() {
                     <Text style={styles.reviewItemPrice}>{currency} {formatCurrency(parseFloat(item.price) * (parseInt(item.quantity) || 1))}</Text>
                   </View>
                 ))}
+
+                <View style={styles.reviewDivider} />
+                <Text style={styles.reviewLabel}>ASSIGNMENT</Text>
+                {items.filter(i => i.name && parseFloat(i.price) > 0).map((item, i) => {
+                  const assignedNames = participants
+                    .filter(p => item.assignedTo.includes(p.id))
+                    .map(p => p.name);
+
+                  return (
+                    <View key={`assign_${i}`} style={styles.assignmentReviewBlock}>
+                      <Text style={styles.assignmentReviewItem}>
+                        {item.name} x{item.quantity || 1}
+                      </Text>
+                      <Text style={styles.assignmentReviewParticipants}>
+                        Assigned to: {assignedNames.length ? assignedNames.join(', ') : 'Unassigned'}
+                      </Text>
+                    </View>
+                  );
+                })}
                 <View style={styles.reviewDivider} />
                 <View style={styles.reviewItem}>
                   <Text style={styles.reviewLabel}>SUBTOTAL</Text>
@@ -337,7 +471,17 @@ export default function CreateBillScreen() {
                 <Text style={styles.reviewSmallValue}>{participants.map(p => p.name).join(', ')}</Text>
                 <View style={styles.reviewDivider} />
                 <Text style={styles.reviewLabel}>SPLIT METHOD</Text>
-                <Text style={styles.reviewSmallValue}>{splitMethod === 'equal' ? 'Equal' : splitMethod === 'per_item' ? 'By Item' : splitMethod === 'percentage' ? 'Percentage' : 'Custom'}</Text>
+                <Text style={styles.reviewSmallValue}>By Item</Text>
+                <View style={styles.reviewDivider} />
+                <Text style={styles.reviewLabel}>BY ITEM SHARES</Text>
+                {participants.map(p => (
+                  <View key={`share_${p.id}`} style={styles.reviewItem}>
+                    <Text style={styles.reviewSmallLabel}>{p.name}</Text>
+                    <Text style={styles.reviewSmallValue}>
+                      {currency} {formatCurrency(byItemShares[p.id] || 0)}
+                    </Text>
+                  </View>
+                ))}
               </View>
             </View>
           )}
@@ -357,18 +501,23 @@ export default function CreateBillScreen() {
             </TouchableOpacity>
           )}
           <TouchableOpacity
-            testID={step < 3 ? 'next-step-btn' : 'save-bill-btn'}
-            style={[styles.nextBtn, step === 0 && { flex: 1 }, (!canProceed && step < 3) && styles.nextBtnDisabled]}
-            onPress={step < 3 ? () => { if (canProceed) setStep(step + 1); } : handleSave}
-            disabled={saving || (!canProceed && step < 3)}
+            testID={step < 4 ? 'next-step-btn' : 'save-bill-btn'}
+            style={[
+              styles.nextBtn,
+              step === 0 && { flex: 1 },
+              (!canProceed && step < 4) && styles.nextBtnDisabled,
+              (step === 4 && !!createBlockedReason) && styles.nextBtnDisabled,
+            ]}
+            onPress={step < 4 ? () => { if (canProceed) setStep(step + 1); } : handleSave}
+            disabled={saving || (!canProceed && step < 4) || (step === 4 && !!createBlockedReason)}
             activeOpacity={0.8}
           >
             {saving ? (
               <ActivityIndicator size="small" color={Colors.primaryForeground} />
             ) : (
               <>
-                <Text style={[styles.nextBtnText, (!canProceed && step < 3) && styles.nextBtnTextDisabled]}>{step < 3 ? 'Continue' : 'Create Bill'}</Text>
-                {step < 3 && <Ionicons name="arrow-forward" size={20} color={(!canProceed && step < 3) ? Colors.muted : Colors.primaryForeground} />}
+                <Text style={[styles.nextBtnText, (!canProceed && step < 4) && styles.nextBtnTextDisabled]}>{step < 4 ? 'Continue' : 'Create Bill'}</Text>
+                {step < 4 && <Ionicons name="arrow-forward" size={20} color={(!canProceed && step < 4) ? Colors.muted : Colors.primaryForeground} />}
               </>
             )}
           </TouchableOpacity>
@@ -451,4 +600,17 @@ const styles = StyleSheet.create({
   subtitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 12 },
   statusBadge: { flexDirection: 'row', gap: 6, alignItems: 'center', backgroundColor: Colors.success + '15', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
   statusText: { fontSize: 12, color: Colors.success, fontWeight: '600' },
+  assignmentReviewBlock: {
+    marginBottom: 10,
+  },
+  assignmentReviewItem: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.white,
+  },
+  assignmentReviewParticipants: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    marginTop: 2,
+  },
 });

@@ -8,6 +8,69 @@
 
 import { Item, Participant, PaymentBreakdown, SplitCalculationInput } from '../types/billing';
 
+function round2(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function distributeProportionally(
+  baseAmounts: Record<string, number>,
+  totalToDistribute: number,
+  participantIds: string[]
+): Record<string, number> {
+  const distributed: Record<string, number> = {};
+  participantIds.forEach(id => {
+    distributed[id] = 0;
+  });
+
+  const baseTotal = participantIds.reduce((sum, id) => sum + (baseAmounts[id] || 0), 0);
+  if (participantIds.length === 0 || totalToDistribute === 0) {
+    return distributed;
+  }
+
+  if (baseTotal <= 0) {
+    const equalShare = totalToDistribute / participantIds.length;
+    participantIds.forEach(id => {
+      distributed[id] = round2(equalShare);
+    });
+    const roundedTotal = participantIds.reduce((sum, id) => sum + distributed[id], 0);
+    const diff = round2(totalToDistribute - roundedTotal);
+    if (Math.abs(diff) >= 0.01 && participantIds[0]) {
+      distributed[participantIds[0]] = round2(distributed[participantIds[0]] + diff);
+    }
+    return distributed;
+  }
+
+  const rawShares = participantIds.map(id => {
+    const share = ((baseAmounts[id] || 0) / baseTotal) * totalToDistribute;
+    const roundedShare = round2(share);
+    return { id, share, roundedShare, remainder: share - roundedShare };
+  });
+
+  rawShares.forEach(item => {
+    distributed[item.id] = item.roundedShare;
+  });
+
+  const roundedTotal = rawShares.reduce((sum, item) => sum + item.roundedShare, 0);
+  let diffInCents = Math.round((totalToDistribute - roundedTotal) * 100);
+  if (diffInCents === 0) {
+    return distributed;
+  }
+
+  const sorted = [...rawShares].sort((a, b) => {
+    return diffInCents > 0 ? b.remainder - a.remainder : a.remainder - b.remainder;
+  });
+
+  let idx = 0;
+  while (diffInCents !== 0 && sorted.length > 0) {
+    const target = sorted[idx % sorted.length].id;
+    distributed[target] = round2(distributed[target] + (diffInCents > 0 ? 0.01 : -0.01));
+    diffInCents += diffInCents > 0 ? -1 : 1;
+    idx += 1;
+  }
+
+  return distributed;
+}
+
 /**
  * Calculate subtotal from items
  * Formula: sum(item.price × item.quantity)
@@ -47,6 +110,17 @@ export function calculateServiceChargeAmount(
   return serviceChargeValue;
 }
 
+export function calculateDiscountAmount(
+  subtotal: number,
+  discountValue: number,
+  discountType: 'percentage' | 'fixed'
+): number {
+  if (discountType === 'percentage') {
+    return (subtotal * discountValue) / 100;
+  }
+  return discountValue;
+}
+
 /**
  * Calculate grand total
  * Formula: subtotal + tax + service charge
@@ -54,9 +128,10 @@ export function calculateServiceChargeAmount(
 export function calculateGrandTotal(
   subtotal: number,
   taxAmount: number,
-  serviceChargeAmount: number
+  serviceChargeAmount: number,
+  discountAmount = 0
 ): number {
-  return subtotal + taxAmount + serviceChargeAmount;
+  return subtotal + taxAmount + serviceChargeAmount - discountAmount;
 }
 
 /**
@@ -98,11 +173,44 @@ export function calculateEqualSplit(
  * - Accumulation pattern: Use += to add (never overwrite)
  */
 
-type ItemWithQuantity = Item & { 
-  price: number; 
-  quantity: number; 
-  assignedTo: string[]; 
+type ItemWithQuantity = Item & {
+  price: number;
+  quantity: number;
+  assignedTo?: string[];
+  assignedQuantities?: Record<string, number>;
 };
+
+function normalizeAssignedQuantities(item: ItemWithQuantity): Record<string, number> {
+  const quantities = item.assignedQuantities || {};
+  const normalized: Record<string, number> = {};
+
+  Object.entries(quantities).forEach(([participantId, qty]) => {
+    if (typeof qty === 'number' && Number.isFinite(qty) && qty > 0) {
+      normalized[participantId] = Math.floor(qty);
+    }
+  });
+
+  if (Object.keys(normalized).length > 0) {
+    return normalized;
+  }
+
+  const assignedTo = item.assignedTo || [];
+  if (assignedTo.length === 0) {
+    return {};
+  }
+
+  // Backward-compatible fallback: infer x1 for each assigned participant.
+  // This is valid only when it matches item.quantity exactly.
+  if (assignedTo.length === item.quantity) {
+    const inferred: Record<string, number> = {};
+    assignedTo.forEach(id => {
+      inferred[id] = 1;
+    });
+    return inferred;
+  }
+
+  return {};
+}
 
 /**
  * Core function: Calculate item split amounts (items only, no tax/service)
@@ -126,24 +234,33 @@ export function calculateItemAmounts(
 
   // STEP 2: Process each item exactly once (single iteration = no mutation issues)
   items.forEach(item => {
-    // Validation: assignedTo must not be empty
-    if (!item.assignedTo || item.assignedTo.length === 0) {
+    const assignment = normalizeAssignedQuantities(item);
+    const participantIds = Object.keys(assignment);
+
+    if (participantIds.length === 0) {
       throw new Error(
-        `Item "${item.name}" has no assigned participants. ` +
-        `Please assign at least one person or adjust the split method.`
+        `Item "${item.name}" has no valid quantity assignments. ` +
+        `Assign item quantity to at least one person.`
       );
     }
 
-    // Calculate item total: price × quantity
-    const itemTotal = item.price * item.quantity;
+    const assignedQtyTotal = participantIds.reduce((sum, id) => sum + assignment[id], 0);
+    if (assignedQtyTotal > item.quantity) {
+      throw new Error(
+        `Item "${item.name}" assigned quantity (${assignedQtyTotal}) exceeds item quantity (${item.quantity}).`
+      );
+    }
+    if (assignedQtyTotal <= 0) {
+      throw new Error(`Item "${item.name}" assigned quantity must be greater than zero.`);
+    }
 
-    // Calculate share per assigned person
-    const sharePerPerson = itemTotal / item.assignedTo.length;
-
-    // Add share to each assigned participant
-    // Using immutable accumulation pattern
-    item.assignedTo.forEach(participantId => {
-      itemAmounts[participantId] += sharePerPerson;
+    const unitPrice = item.quantity > 0 ? item.price : 0;
+    participantIds.forEach(participantId => {
+      if (!(participantId in itemAmounts)) {
+        throw new Error(`Participant "${participantId}" not found for item "${item.name}".`);
+      }
+      const participantAmount = unitPrice * assignment[participantId];
+      itemAmounts[participantId] += participantAmount;
     });
   });
 
@@ -157,30 +274,46 @@ export function calculateItemAmounts(
 export function calculateItemSplit(
   items: Item[],
   participants: Participant[],
-  grandTotal: number,
+  _grandTotal: number,
   taxAmount: number,
   serviceChargeAmount: number,
-  subtotal: number
+  subtotal: number,
+  tipAmount = 0,
+  discountAmount = 0
 ): PaymentBreakdown[] {
   try {
     // Get item amounts using pure function
     const itemAmounts = calculateItemAmounts(items as ItemWithQuantity[], participants);
 
     // Distribute tax and service charge proportionally to item amounts
+    const participantIds = participants.map(p => p.id);
+    const effectiveSubtotal = subtotal > 0
+      ? subtotal
+      : participantIds.reduce((sum, id) => sum + (itemAmounts[id] || 0), 0);
+
+    const taxShares = distributeProportionally(itemAmounts, taxAmount, participantIds);
+    const serviceShares = distributeProportionally(itemAmounts, serviceChargeAmount, participantIds);
+    const tipShares = distributeProportionally(itemAmounts, tipAmount, participantIds);
+    const discountShares = distributeProportionally(itemAmounts, discountAmount, participantIds);
+
     const totals: Record<string, number> = {};
     participants.forEach(p => {
-      let amount = itemAmounts[p.id];
+      const personSubtotal = itemAmounts[p.id] || 0;
+      const amount = personSubtotal
+        + (taxShares[p.id] || 0)
+        + (serviceShares[p.id] || 0)
+        + (tipShares[p.id] || 0)
+        - (discountShares[p.id] || 0);
 
-      // Add proportional share of tax and service charge
-      if (subtotal > 0) {
-        const proportion = itemAmounts[p.id] / subtotal;
-        amount += taxAmount * proportion;
-        amount += serviceChargeAmount * proportion;
-      }
-
-      // Round to 2 decimals to avoid floating point errors
-      totals[p.id] = parseFloat(amount.toFixed(2));
+      totals[p.id] = round2(amount);
     });
+
+    const expectedTotal = round2(effectiveSubtotal + taxAmount + serviceChargeAmount + tipAmount - discountAmount);
+    const currentTotal = round2(Object.values(totals).reduce((sum, value) => sum + value, 0));
+    const diff = round2(expectedTotal - currentTotal);
+    if (Math.abs(diff) >= 0.01 && participantIds[0]) {
+      totals[participantIds[0]] = round2(totals[participantIds[0]] + diff);
+    }
 
     // Return as PaymentBreakdown array
     return participants.map(participant => ({
@@ -243,67 +376,51 @@ export function calculateSplit(input: SplitCalculationInput): PaymentBreakdown[]
     items,
     taxAmount,
     serviceChargeAmount,
+    tipAmount = 0,
+    discountAmount = 0,
     splitMethod,
     percentages = {},
     customAmounts = {},
   } = input;
-
-  // DEBUG: Log split method being used
-  console.log('🔍 [calculateSplit] splitMethod:', splitMethod);
-  console.log('🔍 [calculateSplit] participants count:', participants.length);
-  console.log('🔍 [calculateSplit] items count:', items.length);
-  console.log('🔍 [calculateSplit] grandTotal:', grandTotal);
 
   try {
     let result: PaymentBreakdown[];
 
     switch (splitMethod) {
       case 'EQUAL':
-        console.log('✅ [calculateSplit] Using EQUAL split');
         result = calculateEqualSplit(grandTotal, participants);
         break;
 
       case 'ITEM':
-        console.log('✅ [calculateSplit] Using ITEM split');
         result = calculateItemSplit(
           items,
           participants,
           grandTotal,
           taxAmount,
           serviceChargeAmount,
-          grandTotal - taxAmount - serviceChargeAmount // subtotal
+          grandTotal - taxAmount - serviceChargeAmount + discountAmount - tipAmount,
+          tipAmount,
+          discountAmount
         );
         break;
 
       case 'PERCENTAGE':
-        console.log('✅ [calculateSplit] Using PERCENTAGE split');
         result = calculatePercentageSplit(grandTotal, participants, percentages);
         break;
 
       case 'CUSTOM':
-        console.log('✅ [calculateSplit] Using CUSTOM split');
         result = calculateCustomSplit(participants, customAmounts);
         break;
 
       default:
-        console.warn('⚠️ [calculateSplit] UNKNOWN split method:', splitMethod);
-        console.warn('⚠️ [calculateSplit] Defaulting to EQUAL split (WARNING: this should not happen!)');
         result = calculateEqualSplit(grandTotal, participants);
         break;
     }
 
-    // Verify breakdown
-    const breakdownTotal = result.reduce((sum, b) => sum + b.amount, 0);
-    console.log('📊 [calculateSplit] Breakdown total:', breakdownTotal);
-    console.log('📊 [calculateSplit] Expected total:', grandTotal);
-    console.log('📊 [calculateSplit] Match:', Math.abs(breakdownTotal - grandTotal) < 0.01 ? '✓' : '✗');
-    console.log('📊 [calculateSplit] Breakdown result:', result);
-
     return result;
   } catch (error) {
-    console.error('❌ [calculateSplit] ERROR:', error);
-    console.error('❌ [calculateSplit] Caught exception, returning empty breakdown');
-    
+    console.error('Split calculation error:', error);
+
     // Safety fallback: return breakdown with 0 amounts for all participants
     return participants.map(p => ({
       participantId: p.id,
@@ -327,7 +444,11 @@ export function getBreakdownTotal(breakdown: PaymentBreakdown[]): number {
  */
 export function getItemsForParticipant(items: Item[], participantId: string): Item[] {
   return items.filter(item => {
+    const assignedQuantities = item.assignedQuantities || {};
+    if (Object.keys(assignedQuantities).length > 0) {
+      return (assignedQuantities[participantId] || 0) > 0;
+    }
     const assignedTo = item.assignedTo || [];
-    return assignedTo.length === 0 || assignedTo.includes(participantId);
+    return assignedTo.includes(participantId);
   });
 }

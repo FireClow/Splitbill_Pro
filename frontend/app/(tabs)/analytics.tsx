@@ -329,22 +329,22 @@ export default function AnalyticsScreen() {
                 {/* Summary Below Chart */}
                 <View style={styles.chartSummary}>
                   <View style={styles.summaryItem}>
-                    <Text style={styles.summaryValue}>
+                    <Text style={styles.chartSummaryValue}>
                       {(spending.reduce((sum, item) => sum + (item.total || 0), 0)).toLocaleString('en-US', {
                         minimumFractionDigits: 2,
                         maximumFractionDigits: 2,
                       })}
                     </Text>
-                    <Text style={styles.summaryLabel}>Total Spending</Text>
+                    <Text style={styles.chartSummaryLabel}>Total Spending</Text>
                   </View>
                   <View style={styles.summaryItem}>
-                    <Text style={styles.summaryValue}>
+                    <Text style={styles.chartSummaryValue}>
                       {Math.max(...spending.map(s => s.total || 0)).toLocaleString('en-US', {
                         minimumFractionDigits: 2,
                         maximumFractionDigits: 2,
                       })}
                     </Text>
-                    <Text style={styles.summaryLabel}>Highest Month</Text>
+                    <Text style={styles.chartSummaryLabel}>Highest Month</Text>
                   </View>
                 </View>
               </View>
@@ -661,12 +661,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
   },
-  summaryValue: {
+  chartSummaryValue: {
     fontSize: 16,
     fontWeight: '700',
     color: Colors.primary,
   },
-  summaryLabel: {
+  chartSummaryLabel: {
     fontSize: 11,
     fontWeight: '600',
     color: Colors.textMuted,

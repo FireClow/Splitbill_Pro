@@ -23,6 +23,7 @@ export interface Item {
   price: number;
   quantity: number;
   assignedTo?: string[]; // Only for ITEM split method
+  assignedQuantities?: Record<string, number>; // participantId -> assigned qty
 }
 
 /**
@@ -50,6 +51,12 @@ export interface Bill {
   taxAmount: number;
   taxType: 'percentage' | 'fixed'; // Added for flexibility
   taxValue: number;
+  tipAmount: number;
+  tipType: 'percentage' | 'fixed';
+  tipValue: number;
+  discountAmount: number;
+  discountType: 'percentage' | 'fixed';
+  discountValue: number;
   serviceChargeAmount: number;
   serviceChargeType: 'percentage' | 'fixed'; // Added for flexibility
   serviceChargeValue: number;
@@ -80,6 +87,10 @@ export interface CreateBillFormState {
   items: Item[];
   taxValue: number;
   taxType: 'percentage' | 'fixed';
+  tipValue: number;
+  tipType: 'percentage' | 'fixed';
+  discountValue: number;
+  discountType: 'percentage' | 'fixed';
   serviceChargeValue: number;
   serviceChargeType: 'percentage' | 'fixed';
   
@@ -94,6 +105,8 @@ export interface CreateBillFormState {
   // Calculated
   subtotal: number;
   taxAmount: number;
+  tipAmount: number;
+  discountAmount: number;
   serviceChargeAmount: number;
   grandTotal: number;
   breakdown: PaymentBreakdown[];
@@ -105,6 +118,8 @@ export interface CreateBillFormState {
 export interface ValidationResult {
   isValid: boolean;
   errors: string[];
+  valid?: boolean;
+  error?: string;
   warnings?: string[];
 }
 
@@ -117,6 +132,8 @@ export interface SplitCalculationInput {
   items: Item[];
   taxAmount: number;
   serviceChargeAmount: number;
+  tipAmount?: number;
+  discountAmount?: number;
   splitMethod: SplitMethod;
   percentages?: Record<string, number>; // For percentage split
   customAmounts?: Record<string, number>; // For custom split

@@ -67,16 +67,18 @@ class TestBillsCRUD:
         assert response.status_code == 200, f"Get bills failed with status {response.status_code}"
         
         data = response.json()
-        assert isinstance(data, list), "Response should be a list"
-        assert len(data) >= 1, "Should have at least one bill (the test bill)"
+        assert isinstance(data, dict), "Response should be an object"
+        assert "bills" in data, "Response should include bills field"
+        assert isinstance(data["bills"], list), "bills field should be a list"
+        assert len(data["bills"]) >= 1, "Should have at least one bill (the test bill)"
         
         # Verify test bill is in the list
         if TestBillsCRUD.created_bill_id:
-            test_bill = next((b for b in data if b["bill_id"] == TestBillsCRUD.created_bill_id), None)
+            test_bill = next((b for b in data["bills"] if b["bill_id"] == TestBillsCRUD.created_bill_id), None)
             assert test_bill is not None, "Created test bill not found in bills list"
-            print(f"✓ Get bills list passed - Found {len(data)} bills including test bill")
+            print(f"✓ Get bills list passed - Found {len(data['bills'])} bills including test bill")
         else:
-            print(f"✓ Get bills list passed - Found {len(data)} bills")
+            print(f"✓ Get bills list passed - Found {len(data['bills'])} bills")
 
     def test_get_bill_detail(self, api_client, auth_headers, test_bill_id):
         """Test GET /api/bills/{bill_id} - Get specific bill details"""

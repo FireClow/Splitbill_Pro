@@ -185,7 +185,7 @@ export default function SettingsScreen() {
               <Text style={styles.infoBullet}>• Outstanding amount on home screen</Text>
               <Text style={styles.infoBullet}>• Analytics and spending charts</Text>
               <Text style={styles.infoBullet}>• Total amounts in dashboard</Text>
-              <Text style={styles.infoText} style={{ marginTop: 12 }}>
+              <Text style={[styles.infoText, { marginTop: 12 }]}>
                 Conversion rates are fetched automatically and cached for 1 hour.
               </Text>
             </View>

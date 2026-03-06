@@ -95,14 +95,42 @@ class ReceiptParser:
         """Extract items from receipt text with flexible pattern matching (supports multi-line format)."""
         items = []
         lines = text.split('\n')
+
+        def is_non_item_line(raw_line: str) -> bool:
+            line = raw_line.strip().lower()
+            if not line:
+                return True
+
+            ignored_keywords = [
+                'subtotal', 'sub total', 'total', 'grand total', 'total item',
+                'tax', 'pajak', 'ppn', 'service', 'svc', 'charge',
+                'qris', 'qr', 'debit', 'kredit', 'credit', 'cash', 'bayar',
+                'kembalian', 'change', 'diskon', 'discount', 'promo',
+                'terima kasih', 'thank you', 'whatsapp', 'instagram',
+                'alamat', 'address', 'invoice', 'nota', 'pelanggan', 'transaksi',
+                'nomor meja', 'karyawan', 'dine in', 'take away',
+            ]
+
+            if any(keyword in line for keyword in ignored_keywords):
+                return True
+
+            # Lines with only separators, timestamps, or metadata should not be treated as items.
+            if re.match(r'^[\d\s/\-:=.]+$', line) or re.match(r'^[=\-_*]+$', line):
+                return True
+
+            # Ignore lines that are mostly payment totals/currency amounts with minimal text.
+            if re.match(r'^(rp|idr)?\s*[\d.,]+\s*$', line):
+                return True
+
+            return False
         
         # Skip keywords for header/footer/totals
         skip_keywords = ['tanggal', 'waktu', 'kasir', 'thank', 'terima', 'no.', 'invoice', 'nota', 
-                       'alamat', 'address', 'phone', 'telp', 'pelanggan', 'nomor meja', 'transaksi',
-                       'diskon', 'discount', 'bayar', 'cash', 'card', 'kembalian', 'change', 
-                       'subtotal', 'sub total', 'pajak', 'tax', 'service', 'grand total', 
-                       'total', 'dris bni', 'terima kasih', 'whatsapp', 'instagram', 'karyawan',
-                       'markop', 'raya belong', 'jakarta', 'dine in', 'hedan']
+                   'alamat', 'address', 'phone', 'telp', 'pelanggan', 'nomor meja', 'transaksi',
+                   'diskon', 'discount', 'bayar', 'cash', 'card', 'kembalian', 'change', 
+                   'subtotal', 'sub total', 'pajak', 'tax', 'service', 'grand total', 
+                   'total', 'qris', 'qris bni', 'terima kasih', 'whatsapp', 'instagram', 'karyawan',
+                   'markop', 'raya belong', 'jakarta', 'dine in', 'hedan']
         
         i = 0
         while i < len(lines):
@@ -113,11 +141,7 @@ class ReceiptParser:
                 continue
             
             # Skip header/footer/total lines
-            if any(skip in line.lower() for skip in skip_keywords):
-                continue
-            
-            # Skip lines that are just numbers, dates, or dashes
-            if re.match(r'^[\d\s/\-:=.]+$', line) or re.match(r'^[=\-]+$', line):
+            if is_non_item_line(line) or any(skip in line.lower() for skip in skip_keywords):
                 continue
             
             name = None
@@ -183,6 +207,8 @@ class ReceiptParser:
                 
                 # Filter out very short names or pure numbers
                 if len(name) < 2 or name.isdigit():
+                    continue
+                if is_non_item_line(name):
                     continue
                 
                 print(f"  [MATCH] {name} | qty={qty} | price={price} | subtotal={price * qty}")

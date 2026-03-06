@@ -11,7 +11,7 @@ import {
   Platform,
   ScrollView,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -36,11 +36,13 @@ interface ScannedReceipt {
 
 export default function ScanReceiptScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ source?: string }>();
   const { user } = useAuth();
   const [cameraMode, setCameraMode] = useState<'camera' | 'gallery' | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [loading, setLoading] = useState(false);
   const [scanned, setScanned] = useState<ScannedReceipt | null>(null);
+  const [hasAutoOpenedSource, setHasAutoOpenedSource] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
   // Request permissions on mount
@@ -93,6 +95,19 @@ export default function ScanReceiptScreen() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (hasAutoOpenedSource) return;
+    if (params.source === 'camera') {
+      setCameraMode('camera');
+      setHasAutoOpenedSource(true);
+      return;
+    }
+    if (params.source === 'gallery') {
+      setHasAutoOpenedSource(true);
+      handlePickImage();
+    }
+  }, [params.source, hasAutoOpenedSource]);
 
   // Upload image to backend for OCR processing
   const uploadAndScanReceipt = async (imageUri: string) => {

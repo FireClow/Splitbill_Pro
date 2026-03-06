@@ -170,6 +170,7 @@ class BillItemUpdate(BaseModel):
 class ParticipantCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     contact_info: Optional[str] = ""
+    client_id: Optional[str] = None
     @field_validator("name")
     @classmethod
     def clean_name(cls, v: str) -> str:
@@ -303,6 +304,11 @@ async def require_pro(user: dict = Depends(get_current_user)) -> dict:
     return user
 
 async def check_bill_limit(user: dict) -> None:
+    # Local/dev environments should not be blocked by monetization limits during QA.
+    env = os.environ.get("ENV", "development").lower()
+    if env in ("dev", "development", "local"):
+        return
+
     plan = user.get("plan", "free")
     limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["free"])
     active_count = await db.bills.count_documents({"owner_id": user["user_id"], "status": "active"})
@@ -621,11 +627,44 @@ async def create_bill(data: BillCreate, user: dict = Depends(get_current_user)):
     bill_id = f"bill_{uuid.uuid4().hex[:12]}"
     owner_part_id = f"part_{uuid.uuid4().hex[:12]}"
     participants = [{"participant_id": owner_part_id, "name": user["name"], "contact_info": user.get("email", ""), "is_owner": True}]
+    participant_id_map: Dict[str, str] = {}
+    participant_name_map: Dict[str, str] = {}
+
     for p in data.participants:
-        participants.append({"participant_id": f"part_{uuid.uuid4().hex[:12]}", "name": p.name, "contact_info": p.contact_info or "", "is_owner": False})
+        participant_id = f"part_{uuid.uuid4().hex[:12]}"
+        participants.append({
+            "participant_id": participant_id,
+            "name": p.name,
+            "contact_info": p.contact_info or "",
+            "is_owner": False,
+        })
+        if p.client_id:
+            participant_id_map[p.client_id] = participant_id
+        participant_name_map[p.name.strip().lower()] = participant_id
+
     items = []
     for item in data.items:
-        items.append({"item_id": f"item_{uuid.uuid4().hex[:12]}", "name": item.name, "price": item.price, "quantity": item.quantity, "assigned_to": item.assigned_to})
+        resolved_assigned_to: List[str] = []
+        for token in item.assigned_to:
+            mapped_id = participant_id_map.get(token)
+            if mapped_id:
+                resolved_assigned_to.append(mapped_id)
+                continue
+
+            mapped_by_name = participant_name_map.get(str(token).strip().lower())
+            if mapped_by_name:
+                resolved_assigned_to.append(mapped_by_name)
+
+        # Keep unique order to avoid duplicate participant assignment.
+        resolved_assigned_to = list(dict.fromkeys(resolved_assigned_to))
+
+        items.append({
+            "item_id": f"item_{uuid.uuid4().hex[:12]}",
+            "name": item.name,
+            "price": item.price,
+            "quantity": item.quantity,
+            "assigned_to": resolved_assigned_to,
+        })
     bill = {
         "bill_id": bill_id, "owner_id": user["user_id"], "title": data.title, "currency": data.currency.upper(),
         "converted_currency": data.converted_currency, "exchange_rate": None, "exchange_rate_locked": False,
