@@ -1,22 +1,19 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
-  Modal,
   Alert,
   SafeAreaView,
-  Platform,
   ScrollView,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { MaterialCommunityIcons, FontAwesome } from '@expo/vector-icons';
-import { useAuth } from '../contexts/AuthContext';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getOcrUrl } from '../utils/config';
 import { Colors } from '../utils/colors';
@@ -25,7 +22,7 @@ interface ScannedReceipt {
   image_id: string;
   image_uri?: string;
   currency: string;
-  items: Array<{ name: string; quantity: number; price: number }>;
+  items: { name: string; quantity: number; price: number }[];
   subtotal: number;
   tax: number;
   service_charge: number;
@@ -34,13 +31,66 @@ interface ScannedReceipt {
   ocr_text: string;
 }
 
+interface OcrInstallInstructions {
+  download?: string;
+  path?: string;
+  verify_command?: string;
+}
+
+interface OcrErrorDetail {
+  error?: string;
+  install_instructions?: OcrInstallInstructions;
+}
+
+const formatOcrErrorMessage = (detail: unknown): string => {
+  if (!detail) {
+    return 'Failed to scan receipt. Please try again.';
+  }
+
+  if (typeof detail === 'string') {
+    return detail;
+  }
+
+  const parsed = detail as OcrErrorDetail;
+  if (parsed.error && parsed.install_instructions) {
+    const instructions = parsed.install_instructions;
+    return [
+      parsed.error,
+      instructions.download ? `Download: ${instructions.download}` : '',
+      instructions.path ? `Install path: ${instructions.path}` : '',
+      instructions.verify_command ? `Verify: ${instructions.verify_command}` : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  return 'Failed to scan receipt. Please try again.';
+};
+
+const inferMimeType = (fileName: string, blobType?: string): string => {
+  if (blobType && blobType.startsWith('image/')) {
+    return blobType;
+  }
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  return 'image/jpeg';
+};
+
+const readBlobAsDataUrl = async (blob: Blob): Promise<string> => {
+  const reader = new FileReader();
+  return new Promise((resolve, reject) => {
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+};
+
 export default function ScanReceiptScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ source?: string }>();
-  const { user } = useAuth();
   const [cameraMode, setCameraMode] = useState<'camera' | 'gallery' | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [loading, setLoading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [ocrError, setOcrError] = useState<string | null>(null);
   const [scanned, setScanned] = useState<ScannedReceipt | null>(null);
   const [hasAutoOpenedSource, setHasAutoOpenedSource] = useState(false);
   const cameraRef = useRef<CameraView>(null);
@@ -50,10 +100,168 @@ export default function ScanReceiptScreen() {
     if (permission?.status !== 'granted') {
       requestPermission();
     }
-  }, []);
+  }, [permission?.status, requestPermission]);
+
+  // Upload image to backend for OCR processing
+  const uploadAndScanReceipt = useCallback(async (imageUri: string) => {
+    const uploadStartTime = Date.now();
+    try {
+      setLoading(true);
+      setUploadProgress(5);
+      setOcrError(null);
+      console.log('[OCR] Starting upload from:', imageUri);
+
+      const fileName = imageUri.split('/').pop() || 'receipt.jpg';
+
+      let imageBlob: Blob | null = null;
+      try {
+        const blobResponse = await fetch(imageUri);
+        imageBlob = await blobResponse.blob();
+        console.log(`[OCR] Loaded blob directly, size=${imageBlob.size}`);
+      } catch (blobError) {
+        console.warn('[OCR] Direct blob load failed, will fallback to base64 JSON:', blobError);
+      }
+
+      // Send to backend
+      console.log(`[OCR] Sending request to: ${getOcrUrl('scan')}`);
+
+      // Get proper session token from storage
+      const sessionToken = await AsyncStorage.getItem('session_token');
+      const authHeader = sessionToken ? `Bearer ${sessionToken}` : 'Bearer guest';
+      console.log(`[OCR] Auth header: ${authHeader.substring(0, 20)}...`);
+
+      let response: { status: number; ok: boolean; bodyText: string } | null = null;
+      let previewImageUri = imageUri;
+
+      if (imageBlob && imageBlob.size > 0) {
+        const mimeType = inferMimeType(fileName, imageBlob.type);
+        const formData = new FormData();
+        formData.append('file', imageBlob, fileName);
+        setUploadProgress(20);
+        console.log(`[OCR] Multipart upload prepared, mime=${mimeType}, size=${imageBlob.size}`);
+
+        response = await new Promise<{ status: number; ok: boolean; bodyText: string }>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', getOcrUrl('scan'));
+          xhr.setRequestHeader('Authorization', authHeader);
+
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) {
+              const percentage = Math.min(95, Math.round((event.loaded / event.total) * 100));
+              setUploadProgress(Math.max(20, percentage));
+            }
+          };
+
+          xhr.onload = () => {
+            resolve({
+              status: xhr.status,
+              ok: xhr.status >= 200 && xhr.status < 300,
+              bodyText: xhr.responseText || '',
+            });
+          };
+
+          xhr.onerror = () => reject(new Error('Network error while uploading receipt'));
+          xhr.send(formData as any);
+        });
+
+        // Fallback to base64 JSON for compatibility issues on some runtimes.
+        if (!response.ok && (response.status === 400 || response.status === 415 || response.status === 422)) {
+          console.warn('[OCR] Multipart rejected, retrying with JSON base64 payload');
+          response = null;
+        }
+      }
+
+      if (!response) {
+        let dataUrl = '';
+        if (imageBlob && imageBlob.size > 0) {
+          dataUrl = await readBlobAsDataUrl(imageBlob);
+        } else {
+          const base64 = await FileSystem.readAsStringAsync(imageUri, {
+            encoding: 'base64',
+          });
+          const mimeType = inferMimeType(fileName);
+          dataUrl = `data:${mimeType};base64,${base64}`;
+        }
+        previewImageUri = dataUrl;
+        setUploadProgress(90);
+
+        const jsonResponse = await fetch(getOcrUrl('scan'), {
+          method: 'POST',
+          headers: {
+            Authorization: authHeader,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ image: dataUrl }),
+        });
+        response = {
+          status: jsonResponse.status,
+          ok: jsonResponse.ok,
+          bodyText: await jsonResponse.text(),
+        };
+      }
+
+      console.log(`[OCR] Response status: ${response.status}`);
+
+      if (!response.ok) {
+        let errorMsg = `HTTP ${response.status}`;
+        try {
+          const errorData = JSON.parse(response.bodyText) as any;
+          errorMsg = formatOcrErrorMessage(errorData?.detail || errorData?.message || errorData);
+          console.error('[OCR] Backend error:', errorData);
+        } catch (e) {
+          console.error('[OCR] Failed to parse error response:', e);
+        }
+        throw new Error(errorMsg);
+      }
+
+      const result = JSON.parse(response.bodyText) as ScannedReceipt;
+      setUploadProgress(100);
+      console.log('[OCR] Upload successful! Receipt ID:', result.image_id);
+      console.log('[OCR] Upload time:', Date.now() - uploadStartTime, 'ms');
+
+      // Auto-navigate to Review screen immediately after successful upload
+      if (result.image_id) {
+        console.log('[OCR] Navigating to review screen with receipt ID:', result.image_id);
+        console.log('[OCR] Scanned data items:', result.items?.length || 0);
+
+        // Clear loading before navigation
+        // Navigate to review screen
+        try {
+          console.log('[OCR] Calling router.replace...');
+          router.replace({
+            pathname: '/review-receipt',
+            params: {
+              receiptId: result.image_id,
+              scannedData: JSON.stringify({
+                ...result,
+                image_uri: previewImageUri,
+              }),
+            },
+          });
+          console.log('[OCR] router.replace called successfully');
+        } catch (navError) {
+          console.error('[OCR] Navigation error:', navError);
+          Alert.alert('Navigation Error', 'Could not navigate to review screen');
+        }
+      } else {
+        throw new Error('No receipt ID returned from server');
+      }
+    } catch (error: any) {
+      console.error('[OCR] Upload error:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      setOcrError(errorMsg);
+      Alert.alert(
+        'OCR Failed',
+        errorMsg || 'Failed to scan receipt. Please try again.'
+      );
+    } finally {
+      setLoading(false);
+      setTimeout(() => setUploadProgress(0), 200);
+    }
+  }, [router]);
 
   // Handle taking photo with camera
-  const handleTakePhoto = async () => {
+  const handleTakePhoto = useCallback(async () => {
     if (!cameraRef.current) return;
 
     try {
@@ -72,10 +280,10 @@ export default function ScanReceiptScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [uploadAndScanReceipt]);
 
   // Handle gallery image selection
-  const handlePickImage = async () => {
+  const handlePickImage = useCallback(async () => {
     try {
       setLoading(true);
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -94,7 +302,7 @@ export default function ScanReceiptScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [uploadAndScanReceipt]);
 
   useEffect(() => {
     if (hasAutoOpenedSource) return;
@@ -107,153 +315,7 @@ export default function ScanReceiptScreen() {
       setHasAutoOpenedSource(true);
       handlePickImage();
     }
-  }, [params.source, hasAutoOpenedSource]);
-
-  // Upload image to backend for OCR processing
-  const uploadAndScanReceipt = async (imageUri: string) => {
-    let uploadStartTime = Date.now();
-    try {
-      setLoading(true);
-      console.log('[OCR] Starting upload from:', imageUri);
-
-      // Detect if this is a blob URI (web platform)
-      const isBlobUri = imageUri.startsWith('blob:');
-      console.log('[OCR] Is blob URI:', isBlobUri);
-
-      let base64 = '';
-      const fileName = imageUri.split('/').pop() || 'receipt.jpg';
-
-      // Handle blob URI (web)
-      if (isBlobUri) {
-        console.log('[OCR] Converting blob URI to base64...');
-        try {
-          const response = await fetch(imageUri);
-          const blob = await response.blob();
-          const reader = new FileReader();
-          
-          base64 = await new Promise<string>((resolve, reject) => {
-            reader.onload = () => {
-              const result = reader.result as string;
-              const base64String = result.split(',')[1]; // extract base64 part
-              resolve(base64String);
-            };
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-          });
-          console.log(`[OCR] Blob converted to base64, length: ${base64.length}`);
-        } catch (blobError) {
-          console.error('[OCR] Failed to convert blob:', blobError);
-          throw new Error('Failed to process image');
-        }
-      } else {
-        // Handle native URI
-        console.log('[OCR] Reading native file URI...');
-        try {
-          base64 = await FileSystem.readAsStringAsync(imageUri, {
-            encoding: 'base64',
-          });
-          console.log(`[OCR] File read, base64 length: ${base64.length}`);
-        } catch (readError) {
-          console.warn('[OCR] FileSystem read failed:', readError);
-          throw new Error('Failed to read image file');
-        }
-      }
-
-      // Determine MIME type
-      const mimeType = fileName.endsWith('.png') ? 'image/png' : 'image/jpeg';
-      console.log(`[OCR] MIME type: ${mimeType}`);
-
-      // Convert to data URL for display
-      const dataUrl = `data:${mimeType};base64,${base64}`;
-      console.log(`[OCR] DataURL created, length: ${dataUrl.length}`);
-
-      // Create FormData for upload
-      const formData = new FormData();
-      
-      try {
-        const byteArray = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-        const blob = new Blob([byteArray], { type: mimeType });
-        formData.append('file', blob, fileName);
-        console.log(`[OCR] Form data prepared with blob size: ${blob.size} bytes`);
-      } catch (blobCreateError) {
-        console.error('[OCR] Blob creation failed:', blobCreateError);
-        throw new Error('Failed to prepare file for upload');
-      }
-
-      // Send to backend
-      console.log(`[OCR] Sending request to: ${getOcrUrl('scan')}`);
-      
-      // Get proper session token from storage
-      const sessionToken = await AsyncStorage.getItem('session_token');
-      const authHeader = sessionToken ? `Bearer ${sessionToken}` : 'Bearer guest';
-      console.log(`[OCR] Auth header: ${authHeader.substring(0, 20)}...`);
-      
-      const response = await fetch(getOcrUrl('scan'), {
-        method: 'POST',
-        headers: {
-          Authorization: authHeader,
-        },
-        body: formData as any,
-      });
-
-      console.log(`[OCR] Response status: ${response.status}`);
-
-      if (!response.ok) {
-        let errorMsg = `HTTP ${response.status}`;
-        try {
-          const errorData = await response.json() as any;
-          errorMsg = errorData?.detail || errorData?.message || errorMsg;
-          console.error('[OCR] Backend error:', errorData);
-        } catch (e) {
-          console.error('[OCR] Failed to parse error response:', e);
-        }
-        throw new Error(errorMsg);
-      }
-
-      const result = await response.json() as ScannedReceipt;
-      console.log('[OCR] Upload successful! Receipt ID:', result.image_id);
-      console.log('[OCR] Upload time:', Date.now() - uploadStartTime, 'ms');
-
-      // ✅ IMPORTANT: Auto-navigate to Review screen immediately after successful upload
-      if (result.image_id) {
-        console.log('[OCR] Navigating to review screen with receipt ID:', result.image_id);
-        console.log('[OCR] Scanned data items:', result.items?.length || 0);
-        
-        // Clear loading before navigation
-        setLoading(false);
-        
-        // Navigate to review screen
-        try {
-          console.log('[OCR] Calling router.replace...');
-          router.replace({
-            pathname: '/review-receipt',
-            params: {
-              receiptId: result.image_id,
-              scannedData: JSON.stringify({
-                ...result,
-                image_uri: dataUrl,
-              }),
-            },
-          });
-          console.log('[OCR] router.replace called successfully');
-        } catch (navError) {
-          console.error('[OCR] Navigation error:', navError);
-          Alert.alert('Navigation Error', 'Could not navigate to review screen');
-          setLoading(false);
-        }
-      } else {
-        throw new Error('No receipt ID returned from server');
-      }
-    } catch (error: any) {
-      console.error('[OCR] Upload error:', error);
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      Alert.alert(
-        'OCR Failed',
-        errorMsg || 'Failed to scan receipt. Please try again.'
-      );
-      setLoading(false);
-    }
-  };
+  }, [params.source, hasAutoOpenedSource, handlePickImage]);
 
   // Navigate to review screen with scanned data
   const handleReviewResults = () => {
@@ -340,7 +402,10 @@ export default function ScanReceiptScreen() {
           <View style={styles.loadingOverlay}>
             <ActivityIndicator color="white" size="large" />
             <Text style={styles.loadingText}>📸 Processing receipt...</Text>
-            <Text style={styles.loadingSubtext}>Uploading and analyzing...</Text>
+            <Text style={styles.loadingSubtext}>Uploading and analyzing... {uploadProgress}%</Text>
+            <View style={styles.progressTrack}>
+              <View style={[styles.progressFill, { width: `${uploadProgress}%` }]} />
+            </View>
           </View>
         )}
       </SafeAreaView>
@@ -475,6 +540,13 @@ export default function ScanReceiptScreen() {
             <Text style={styles.headerTitle}>Scan Receipt</Text>
             <View style={{ width: 24 }} />
           </View>
+
+          {ocrError && (
+            <View style={styles.errorCard}>
+              <MaterialCommunityIcons name="alert-circle-outline" size={18} color={Colors.error} />
+              <Text style={styles.errorText}>{ocrError}</Text>
+            </View>
+          )}
 
           {/* Illustration */}
           <View style={styles.illustration}>
@@ -773,6 +845,36 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.6)',
     marginTop: 4,
     fontSize: 12,
+  },
+  progressTrack: {
+    width: 220,
+    height: 8,
+    borderRadius: 999,
+    marginTop: 12,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: Colors.primary,
+  },
+  errorCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 12,
+    marginBottom: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.error + '66',
+    backgroundColor: Colors.error + '12',
+  },
+  errorText: {
+    flex: 1,
+    color: Colors.error,
+    fontSize: 12,
+    lineHeight: 18,
   },
   // Results styles
   confidenceBadge: {

@@ -14,7 +14,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { api, ApiError } from '../../utils/api';
 import { Colors } from '../../utils/colors';
 import { useAuth } from '../../contexts/AuthContext';
-import BannerAd from '../../components/BannerAd';
+import { BannerAd } from '../../components/BannerAd';
 
 interface DashboardStats {
   total_bills: number;

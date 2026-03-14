@@ -12,16 +12,15 @@ Features:
 """
 
 import re
-from typing import Dict, List, Optional, Any, Tuple
-from decimal import Decimal
+from typing import Dict, List, Any
 import pytesseract
-from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageEnhance
+from PIL import Image, ImageFilter, ImageOps, ImageEnhance
 import io
 import logging
 import os
 from datetime import datetime
 import numpy as np
-from collections import Counter
+from ocr_service import get_tesseract_status
 
 logger = logging.getLogger("receipt_processor")
 
@@ -74,6 +73,12 @@ class ReceiptParser:
             else:
                 # Likely thousands: 10,000
                 value = value.replace(',', '')
+        elif '.' in value:
+            # Dot-only values can be decimal (5.50) or thousands (25.000, 1.250.000)
+            parts = value.split('.')
+            if len(parts) > 1 and all(part.isdigit() for part in parts):
+                if len(parts[-1]) == 3:
+                    value = ''.join(parts)
         # Remove any remaining non-numeric characters except dot
         value = re.sub(r'[^\d.]', '', value)
         try:
@@ -190,7 +195,7 @@ class ReceiptParser:
                     qty = int(match.group(1))
                     price = ReceiptParser.normalize_number(match.group(2))
                     i += 1  # Skip the next line since we already processed it
-                    print(f"  [MULTI-LINE] '{name}' + '{next_line}' -> qty={qty}, price={price}")
+                    logger.debug(f"[MULTI-LINE] '{name}' + '{next_line}' -> qty={qty}, price={price}")
             
             # PATTERN 6: Find any price at the end without Rp prefix
             if not name:
@@ -211,7 +216,7 @@ class ReceiptParser:
                 if is_non_item_line(name):
                     continue
                 
-                print(f"  [MATCH] {name} | qty={qty} | price={price} | subtotal={price * qty}")
+                logger.debug(f"[MATCH] {name} | qty={qty} | price={price} | subtotal={price * qty}")
                 
                 items.append({
                     'name': name,
@@ -325,6 +330,12 @@ class ReceiptParser:
             totals=totals,
             ocr_text=ocr_text
         )
+
+        # Fallback totals for receipts without explicit subtotal/total labels.
+        if totals['subtotal'] <= 0 and items:
+            totals['subtotal'] = float(sum(item.get('subtotal', 0.0) for item in items))
+        if totals['total'] <= 0:
+            totals['total'] = totals['subtotal'] + totals['tax'] + totals['service_charge']
         
         result = {
             'currency': currency,
@@ -467,105 +478,34 @@ class OCREngine:
     }
     
     @staticmethod
-    def _deskew_image(image: Image.Image) -> Image.Image:
-        """
-        Detect and rotate image to correct skew/tilt.
-        Helps OCR engine read tilted receipt photos.
-        """
-        try:
-            from scipy import ndimage
-            
-            # Convert to numpy array
-            img_array = np.array(image)
-            
-            # Find edges (simple edge detection)
-            edges = np.abs(np.gradient(img_array, axis=0)) + np.abs(np.gradient(img_array, axis=1))
-            
-            # Detect skew angle using Hough transform approximation
-            # For simplicity, use line detection on edges
-            if edges.max() > 0:
-                # Normalize edges
-                edges = (edges / edges.max() * 255).astype(np.uint8)
-                
-                # Estimate tilt angle from edge orientation
-                # This is a simplified approach - in production, use more robust methods
-                max_angle = 3  # Limit to ±3 degrees to avoid rotation errors
-                for angle in range(-max_angle, max_angle + 1):
-                    if angle == 0:
-                        continue
-                    # Test rotation
-                    rotated = image.rotate(angle, expand=False, fillcolor='white')
-                    # Could test quality here, but for simplicity just return at small angle
-            
-            return image
-        except Exception as e:
-            logger.debug(f"Deskew failed: {e}, using original image")
-            return image
-    
-    @staticmethod
-    def _adaptive_threshold(img_array: np.ndarray) -> np.ndarray:
-        """
-        Apply adaptive thresholding to better separate text from background.
-        Handles varying lighting conditions across receipt.
-        """
-        try:
-            from scipy.ndimage import uniform_filter
-            
-            # Apply local thresholding
-            kernel_size = 15
-            local_mean = uniform_filter(img_array.astype(float), size=kernel_size)
-            
-            # Threshold based on local mean
-            binary = img_array > (local_mean - 5)
-            
-            return (binary * 255).astype(np.uint8)
-        except Exception as e:
-            logger.debug(f"Adaptive threshold failed: {e}, using Otsu")
-            # Fallback to Otsu's method
-            threshold = np.mean(img_array)
-            return np.where(img_array > threshold, 255, 0).astype(np.uint8)
-    
-    @staticmethod
-    def _enhance_image_advanced(image: Image.Image) -> Image.Image:
-        """
-        SIMPLE IMAGE ENHANCEMENT - Less aggressive to preserve text quality
-        Optimize for OCR without destroying image details.
-        """
-        logger.info("Starting image enhancement...")
-        
-        # Convert to grayscale
-        image = image.convert('L')
+    def _preprocess_image(image: Image.Image) -> Image.Image:
+        """Preprocess receipt image: resize -> grayscale -> threshold."""
+        image = image.convert('RGB')
         width, height = image.size
         logger.info(f"Original size: {width}x{height}")
-        
-        # === STAGE 1: MODERATE UPSCALING (if needed) ===
-        if width < 1800:
-            scale = min(1800 / width, 2.0)  # Conservative - max 2x
-            new_size = (int(width * scale), int(height * scale))
-            image = image.resize(new_size, Image.Resampling.LANCZOS)
+
+        # Bound image size for better OCR quality and memory safety.
+        if width > 2400:
+            scale = 2400 / width
+            image = image.resize((int(width * scale), int(height * scale)), Image.Resampling.LANCZOS)
+            logger.info(f"Downscaled to: {image.size[0]}x{image.size[1]}")
+        elif width < 1200:
+            scale = min(1200 / max(width, 1), 2.0)
+            image = image.resize((int(width * scale), int(height * scale)), Image.Resampling.LANCZOS)
             logger.info(f"Upscaled to: {image.size[0]}x{image.size[1]}")
-        
-        # === STAGE 2: LIGHT DENOISING ===
-        # Use median filter (removes salt-and-pepper noise)
-        image = image.filter(ImageFilter.MedianFilter(size=3))
-        logger.info("Applied light noise reduction")
-        
-        # === STAGE 3: MODEST CONTRAST & BRIGHTNESS ===
-        # Gentle enhancement - don't destroy the image
-        enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(1.3)  # Moderate contrast
-        
-        enhancer = ImageEnhance.Brightness(image)
-        image = enhancer.enhance(1.05)  # Minimal brightness
-        logger.info("Enhanced contrast and brightness (light)")
-        
-        # === STAGE 4: LIGHT SHARPENING ===
-        # Be conservative - over-sharpening destroys OCR
-        sharpness_enhancer = ImageEnhance.Sharpness(image)
-        image = sharpness_enhancer.enhance(1.2)  # Very light sharpening
-        logger.info("Applied light sharpening")
-        
-        return image
+
+        grayscale = ImageOps.grayscale(image)
+        denoised = grayscale.filter(ImageFilter.MedianFilter(size=3))
+        contrast = ImageEnhance.Contrast(denoised).enhance(1.35)
+        sharpened = ImageEnhance.Sharpness(contrast).enhance(1.25)
+        normalized = ImageOps.autocontrast(sharpened)
+
+        pixels = np.asarray(normalized, dtype=np.uint8)
+        threshold_value = int(np.mean(pixels))
+        binary = normalized.point(lambda p: 255 if p > threshold_value else 0)
+        logger.info(f"Preprocessing complete with threshold={threshold_value}")
+
+        return binary
     
     @staticmethod
     def _correct_ocr_text(text: str) -> str:
@@ -595,85 +535,42 @@ class OCREngine:
         return corrected
     
     @staticmethod
-    def _extract_with_parameters(image: Image.Image, config: str = '') -> str:
-        """
-        Extract OCR text with specific Tesseract configuration.
-        Different configs can give different results.
-        """
-        try:
-            text = pytesseract.image_to_string(
-                image, 
-                lang='ind+eng',
-                config=config
-            )
-            return text
-        except Exception as e:
-            logger.warning(f"OCR with config failed: {e}")
-            return ""
-    
-    @staticmethod
-    def _merge_ocr_results(results: List[str]) -> str:
-        """
-        Merge multiple OCR extraction attempts using voting.
-        Keeps lines that appear in multiple results (more confident).
-        """
-        if not results:
-            return ""
-        
-        if len(results) == 1:
-            return results[0]
-        
-        # Split into lines
-        all_lines = [r.split('\n') for r in results]
-        
-        # Vote on lines - keep lines that appear in >= 2 results
-        line_votes = Counter()
-        for lines in all_lines:
-            for line in lines:
-                line_normalized = line.strip()
-                if line_normalized:
-                    line_votes[line_normalized] += 1
-        
-        # Keep high-confidence lines
-        merged_lines = [line for line, count in line_votes.items() if count >= 2]
-        
-        # If we lost too much, just concatenate all
-        if not merged_lines or len(merged_lines) < len(all_lines[0]) * 0.3:
-            logger.debug("Merged result too small, using primary result")
-            return results[0]
-        
-        return '\n'.join(merged_lines)
-    
-    @staticmethod
     def extract_text_from_image(image_bytes: bytes) -> str:
         """
         SIMPLE OCR EXTRACTION - Focus on quality over complexity
         
         Process:
-        1. Light image enhancement (preserve text quality)
-        2. Single-pass OCR extraction (most reliable for receipts)
-        3. Post-OCR correction
+        1. Safe dependency check + image validation
+        2. Image preprocessing (resize -> grayscale -> threshold)
+        3. OCR extraction + post correction
         """
         try:
             logger.info("=== OCR EXTRACTION START ===")
+            status = get_tesseract_status()
+            if not status.get("available"):
+                raise OCRError("Tesseract OCR not installed")
             
-            # Open image
-            image = Image.open(io.BytesIO(image_bytes))
+            with Image.open(io.BytesIO(image_bytes)) as source_image:
+                source_image.load()
+                image = source_image.copy()
+
             logger.info(f"Original image: {image.size} {image.format}")
             
-            # === ENHANCEMENT STAGE (lightweight) ===
-            enhanced_image = OCREngine._enhance_image_advanced(image)
+            # === PREPROCESSING STAGE ===
+            enhanced_image = OCREngine._preprocess_image(image)
             logger.info(f"Enhanced image: {enhanced_image.size}")
             
             # === SINGLE-PASS OCR EXTRACTION ===
-            # Use standard config - usually more reliable than multi-pass
             logger.info("OCR extraction (standard config)")
             text = pytesseract.image_to_string(
                 enhanced_image,
                 lang='ind+eng',
-                config='--psm 6'  # Assume single text block (receipts are typically single block)
+                config='--psm 6'
             )
             logger.info(f"OCR result: {len(text)} chars")
+
+            if not text or not text.strip():
+                raise OCRError("OCR returned empty text")
             
             # === POST-OCR CORRECTION ===
             text = OCREngine._correct_ocr_text(text)
@@ -683,13 +580,9 @@ class OCREngine:
             return text
             
         except pytesseract.TesseractNotFoundError:
-            raise OCRError(
-                "Tesseract-OCR is not installed or not in PATH.\n"
-                "Windows installation:\n"
-                "1. Download: https://github.com/UB-Mannheim/tesseract/releases/download/v5.3.3/tesseract-ocr-w64-setup-v5.3.3.20231005.exe\n"
-                "2. Install to: C:\\Program Files\\Tesseract-OCR\n"
-                "3. Restart your terminal and backend server"
-            )
+            raise OCRError("Tesseract OCR not installed")
+        except OCRError:
+            raise
         except Exception as e:
             logger.error(f"OCR extraction failed: {e}", exc_info=True)
             raise OCRError(f"Failed to extract text from image: {str(e)}")

@@ -47,7 +47,6 @@ export default function AnalyticsScreen() {
   const currentDay = now.getDate();
   const currentMonthYear = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const [selectedMonth, setSelectedMonth] = useState(currentMonthYear);
-  const [showMonthSelector, setShowMonthSelector] = useState(false);
   
   // Get current week range for highlighting
   const getCurrentWeekRange = (): string => {

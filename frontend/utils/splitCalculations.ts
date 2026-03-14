@@ -7,6 +7,7 @@
  */
 
 import { Item, Participant, PaymentBreakdown, SplitCalculationInput } from '../types/billing';
+import { getNormalizedItemAssignments } from './itemAssignments';
 
 function round2(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -180,38 +181,6 @@ type ItemWithQuantity = Item & {
   assignedQuantities?: Record<string, number>;
 };
 
-function normalizeAssignedQuantities(item: ItemWithQuantity): Record<string, number> {
-  const quantities = item.assignedQuantities || {};
-  const normalized: Record<string, number> = {};
-
-  Object.entries(quantities).forEach(([participantId, qty]) => {
-    if (typeof qty === 'number' && Number.isFinite(qty) && qty > 0) {
-      normalized[participantId] = Math.floor(qty);
-    }
-  });
-
-  if (Object.keys(normalized).length > 0) {
-    return normalized;
-  }
-
-  const assignedTo = item.assignedTo || [];
-  if (assignedTo.length === 0) {
-    return {};
-  }
-
-  // Backward-compatible fallback: infer x1 for each assigned participant.
-  // This is valid only when it matches item.quantity exactly.
-  if (assignedTo.length === item.quantity) {
-    const inferred: Record<string, number> = {};
-    assignedTo.forEach(id => {
-      inferred[id] = 1;
-    });
-    return inferred;
-  }
-
-  return {};
-}
-
 /**
  * Core function: Calculate item split amounts (items only, no tax/service)
  * Pure function - no side effects
@@ -234,7 +203,7 @@ export function calculateItemAmounts(
 
   // STEP 2: Process each item exactly once (single iteration = no mutation issues)
   items.forEach(item => {
-    const assignment = normalizeAssignedQuantities(item);
+    const assignment = getNormalizedItemAssignments(item);
     const participantIds = Object.keys(assignment);
 
     if (participantIds.length === 0) {

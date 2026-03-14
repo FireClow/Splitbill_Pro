@@ -61,6 +61,89 @@ class TestBillsCRUD:
         assert get_data["title"] == bill_payload["title"], "Title not persisted correctly"
         print(f"✓ Bill persistence verified - Retrieved bill with correct data")
 
+    def test_create_bill_per_item_assignment_with_client_ids(self, api_client, auth_headers):
+        """Test create bill with quantity assignment keyed by participant client_id."""
+        participant_alice = f"alice_{int(time.time() * 1000)}"
+        participant_bob = f"bob_{int(time.time() * 1000)}"
+
+        bill_payload = {
+            "title": "TEST_Create with quantity assignment",
+            "currency": "USD",
+            "items": [
+                {
+                    "name": "Grilled Chicken",
+                    "price": 12.0,
+                    "quantity": 3,
+                    "assigned_to": [participant_alice, participant_bob],
+                    "assigned_quantities": {
+                        participant_alice: 2,
+                        participant_bob: 1,
+                    },
+                    "assignments": [
+                        {"userId": participant_alice, "quantity": 2},
+                        {"userId": participant_bob, "quantity": 1},
+                    ],
+                }
+            ],
+            "participants": [
+                {"name": "Alice Quantity", "contact_info": "", "client_id": participant_alice},
+                {"name": "Bob Quantity", "contact_info": "", "client_id": participant_bob},
+            ],
+            "tax_type": "fixed",
+            "tax_value": 0.0,
+            "service_charge": 0.0,
+            "split_method": "per_item",
+        }
+
+        response = api_client.post(f"{BASE_URL}/api/bills", json=bill_payload, headers=auth_headers)
+        assert response.status_code == 200, f"Create per_item bill failed with status {response.status_code}: {response.text}"
+
+        data = response.json()
+        assert "bill_id" in data, "bill_id missing in create response"
+        assert data["split_method"] == "per_item", "split_method mismatch"
+        assert len(data.get("participants", [])) == 3, "Expected owner + 2 participants"
+
+        item = data["items"][0]
+        assigned_quantities = item.get("assigned_quantities", {})
+        assert len(assigned_quantities) == 2, "Expected 2 participant quantity assignments"
+        assert sum(int(v) for v in assigned_quantities.values()) == 3, "Assigned quantity total must match item quantity"
+
+        by_participant = {s["participant_id"]: float(s["amount_due"]) for s in data.get("splits", [])}
+        owner_id = next((p["participant_id"] for p in data["participants"] if p.get("is_owner")), None)
+        non_owner_splits = [amount for pid, amount in by_participant.items() if pid != owner_id]
+        assert sorted(non_owner_splits) == [12.0, 24.0], f"Unexpected per_item split amounts: {non_owner_splits}"
+        print("✓ Create per_item bill with client_id assignment mapping passed")
+
+    def test_create_bill_per_item_invalid_assignment_returns_400(self, api_client, auth_headers):
+        """Test create bill rejects assignment quantity overflow/mismatch on create path."""
+        participant_alice = f"alice_invalid_{int(time.time() * 1000)}"
+
+        bill_payload = {
+            "title": "TEST_Invalid quantity assignment on create",
+            "currency": "USD",
+            "items": [
+                {
+                    "name": "Soup",
+                    "price": 10.0,
+                    "quantity": 2,
+                    "assigned_to": [participant_alice],
+                    "assigned_quantities": {participant_alice: 3},
+                    "assignments": [{"userId": participant_alice, "quantity": 3}],
+                }
+            ],
+            "participants": [
+                {"name": "Alice Invalid", "contact_info": "", "client_id": participant_alice},
+            ],
+            "tax_type": "fixed",
+            "tax_value": 0.0,
+            "service_charge": 0.0,
+            "split_method": "per_item",
+        }
+
+        response = api_client.post(f"{BASE_URL}/api/bills", json=bill_payload, headers=auth_headers)
+        assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text}"
+        print("✓ Invalid create-bill assignment correctly rejected with 400")
+
     def test_get_bills_list(self, api_client, auth_headers):
         """Test GET /api/bills - Get all bills for authenticated user"""
         response = api_client.get(f"{BASE_URL}/api/bills", headers=auth_headers)

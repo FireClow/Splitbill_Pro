@@ -2,7 +2,7 @@ import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Alert } from 'rea
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, ApiError, removeToken } from '../../utils/api';
+import { api, removeToken } from '../../utils/api';
 import { Colors } from '../../utils/colors';
 
 interface MenuItem {

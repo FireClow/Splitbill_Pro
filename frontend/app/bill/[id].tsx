@@ -1,10 +1,18 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Alert, ActivityIndicator, Share, Platform, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '../../utils/api';
 import { Colors } from '../../utils/colors';
+import { ItemAssignmentEditor } from '../../components/ItemAssignmentEditor';
+import {
+  applyClampedAssignment,
+  getAssignedTotal,
+  getNormalizedItemAssignments,
+  getSafeItemQuantity,
+  mapAssignmentsToApiList,
+} from '../../utils/itemAssignments';
 
 export default function BillDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -18,20 +26,23 @@ export default function BillDetailScreen() {
   const [newPersonName, setNewPersonName] = useState('');
   const [shareLoading, setShareLoading] = useState(false);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
-  const [editingItemAssignedTo, setEditingItemAssignedTo] = useState<string[]>([]);
+  const [editingItemAssignedQuantities, setEditingItemAssignedQuantities] = useState<Record<string, number>>({});
+  const [editingItemQuantity, setEditingItemQuantity] = useState(0);
+  const [editingItemUnitPrice, setEditingItemUnitPrice] = useState(0);
+  const [assignmentWarning, setAssignmentWarning] = useState<string>('');
 
   const loadBill = useCallback(async () => {
     if (!id) return;
     try {
       const data = await api.getBill(id);
       setBill(data);
-    } catch (err) {
+    } catch {
       Alert.alert('Error', 'Failed to load bill');
       router.back();
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, router]);
 
   useEffect(() => { loadBill(); }, [loadBill]);
 
@@ -111,26 +122,99 @@ export default function BillDetailScreen() {
     } catch (err: any) { Alert.alert('Error', err.message); }
   };
 
-  const handleEditItemAssignedTo = (itemId: string, currentAssignedTo: string[]) => {
-    setEditingItemId(itemId);
-    setEditingItemAssignedTo([...currentAssignedTo]);
+  const itemAssignmentsById = useMemo(() => {
+    const items = bill?.items || [];
+    return items.reduce((acc: Record<string, Record<string, number>>, item: any) => {
+      if (item?.item_id) {
+        acc[item.item_id] = getNormalizedItemAssignments(item);
+      }
+      return acc;
+    }, {});
+  }, [bill?.items]);
+
+  const editingAssignedTotal = useMemo(
+    () => getAssignedTotal(editingItemAssignedQuantities),
+    [editingItemAssignedQuantities]
+  );
+
+  const remainingQuantity = useMemo(
+    () => Math.max(0, editingItemQuantity - editingAssignedTotal),
+    [editingItemQuantity, editingAssignedTotal]
+  );
+
+  const participantNameById = useMemo(() => {
+    const entries = (bill?.participants || []).map((p: any) => [p.participant_id, p.name]);
+    return Object.fromEntries(entries) as Record<string, string>;
+  }, [bill?.participants]);
+
+  const handleEditItemAssignedTo = (item: any) => {
+    const assignment = itemAssignmentsById[item.item_id] || getNormalizedItemAssignments(item);
+    setEditingItemId(item.item_id);
+    setEditingItemQuantity(getSafeItemQuantity(item.quantity));
+    setEditingItemUnitPrice(item.price || 0);
+    setEditingItemAssignedQuantities(assignment);
+    setAssignmentWarning('');
   };
 
-  const handleToggleParticipantForItem = (participantId: string) => {
-    setEditingItemAssignedTo(prev =>
-      prev.includes(participantId)
-        ? prev.filter(id => id !== participantId)
-        : [...prev, participantId]
-    );
+  const applyParticipantQuantity = useCallback((participantId: string, requestedQty: number) => {
+    setEditingItemAssignedQuantities(prev => {
+      const { nextAssignments, maxAllowed, wasClamped } = applyClampedAssignment(
+        prev,
+        participantId,
+        requestedQty,
+        editingItemQuantity
+      );
+      if (wasClamped) {
+        setAssignmentWarning(`Cannot assign more than remaining quantity. Max for this user: ${maxAllowed}.`);
+      } else {
+        setAssignmentWarning('');
+      }
+      return nextAssignments;
+    });
+  }, [editingItemQuantity]);
+
+  const adjustParticipantAssignment = (participantId: string, delta: number) => {
+    const current = editingItemAssignedQuantities[participantId] || 0;
+    applyParticipantQuantity(participantId, current + delta);
+  };
+
+  const handleAssignmentInputChange = (participantId: string, text: string) => {
+    const parsed = Number.parseInt(text.replace(/[^0-9]/g, ''), 10);
+    if (Number.isNaN(parsed)) {
+      applyParticipantQuantity(participantId, 0);
+      return;
+    }
+    applyParticipantQuantity(participantId, parsed);
+  };
+
+  const resetEditingItemState = () => {
+    setEditingItemId(null);
+    setEditingItemAssignedQuantities({});
+    setEditingItemQuantity(0);
+    setEditingItemUnitPrice(0);
+    setAssignmentWarning('');
   };
 
   const handleSaveItemAssignedTo = async () => {
     if (!editingItemId) return;
+    if (editingAssignedTotal !== editingItemQuantity) {
+      Alert.alert(
+        'Assignment incomplete',
+        `Assigned quantity must equal item quantity (${editingItemQuantity}). Current total: ${editingAssignedTotal}.`
+      );
+      return;
+    }
+
+    const assignedTo = Object.keys(editingItemAssignedQuantities);
+    const assignments = mapAssignmentsToApiList(editingItemAssignedQuantities);
     try {
-      const updated = await api.updateItem(id!, editingItemId, { assigned_to: editingItemAssignedTo });
+      const updated = await api.updateItem(id!, editingItemId, {
+        assigned_to: assignedTo,
+        assigned_quantities: editingItemAssignedQuantities,
+        assignments,
+      });
       setBill(updated);
-      setEditingItemId(null);
-      setEditingItemAssignedTo([]);
+      resetEditingItemState();
     } catch (err: any) { 
       Alert.alert('Error', err.message); 
     }
@@ -230,7 +314,7 @@ export default function BillDetailScreen() {
                 <View style={styles.itemActions}>
                   <Text style={styles.itemPrice}>{bill.currency} {((item.price * item.quantity) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
                   {bill.split_method === 'per_item' && (
-                    <TouchableOpacity testID={`edit-item-${item.item_id}`} onPress={() => handleEditItemAssignedTo(item.item_id, item.assigned_to || [])} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <TouchableOpacity testID={`edit-item-${item.item_id}`} onPress={() => handleEditItemAssignedTo(item)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                       <Ionicons name="people-outline" size={18} color={Colors.primary} />
                     </TouchableOpacity>
                   )}
@@ -241,15 +325,15 @@ export default function BillDetailScreen() {
               </View>
 
               {/* Show assigned participants if split by item */}
-              {bill.split_method === 'per_item' && item.assigned_to && item.assigned_to.length > 0 && (
+              {bill.split_method === 'per_item' && Object.keys(itemAssignmentsById[item.item_id] || {}).length > 0 && (
                 <View style={styles.itemAssignedInfo}>
-                  <Text style={styles.assignedInfoLabel}>Split among:</Text>
+                  <Text style={styles.assignedInfoLabel}>Assigned quantities:</Text>
                   <View style={styles.assignedInfoTags}>
-                    {item.assigned_to.map((participantId: string) => {
-                      const participant = bill.participants.find((p: any) => p.participant_id === participantId);
-                      return participant ? (
+                    {Object.entries(itemAssignmentsById[item.item_id] || ({} as Record<string, number>)).map(([participantId, qty]) => {
+                      const participantName = participantNameById[participantId];
+                      return participantName ? (
                         <View key={participantId} style={styles.assignedTag}>
-                          <Text style={styles.assignedTagText}>{participant.name}</Text>
+                          <Text style={styles.assignedTagText}>{participantName} x{Number(qty)}</Text>
                         </View>
                       ) : null;
                     })}
@@ -257,35 +341,23 @@ export default function BillDetailScreen() {
                 </View>
               )}
 
-              {/* Editing mode - select participants */}
+              {/* Editing mode - assign item quantity per participant */}
               {editingItemId === item.item_id && (
-                <View style={styles.itemEditSection}>
-                  <Text style={styles.editSectionTitle}>Select who pays for this item:</Text>
-                  {bill.participants?.map((participant: any) => (
-                    <TouchableOpacity
-                      key={participant.participant_id}
-                      style={styles.participantCheckRow}
-                      onPress={() => handleToggleParticipantForItem(participant.participant_id)}
-                    >
-                      <View style={styles.checkboxContainer}>
-                        <View style={[styles.checkbox, editingItemAssignedTo.includes(participant.participant_id) && styles.checkboxChecked]}>
-                          {editingItemAssignedTo.includes(participant.participant_id) && (
-                            <Ionicons name="checkmark" size={14} color={Colors.white} />
-                          )}
-                        </View>
-                      </View>
-                      <Text style={styles.participantCheckLabel}>{participant.name}</Text>
-                    </TouchableOpacity>
-                  ))}
-                  <View style={styles.editActionRow}>
-                    <TouchableOpacity style={[styles.editBtn, styles.editBtnCancel]} onPress={() => setEditingItemId(null)}>
-                      <Text style={styles.editBtnText}>Cancel</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.editBtn, styles.editBtnSave]} onPress={handleSaveItemAssignedTo}>
-                      <Text style={[styles.editBtnText, { color: Colors.primaryForeground }]}>Save</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
+                <ItemAssignmentEditor
+                  participants={bill.participants || []}
+                  assignments={editingItemAssignedQuantities}
+                  unitPrice={editingItemUnitPrice}
+                  currency={bill.currency}
+                  itemQuantity={editingItemQuantity}
+                  assignedTotal={editingAssignedTotal}
+                  remainingQuantity={remainingQuantity}
+                  warning={assignmentWarning}
+                  onAdjust={adjustParticipantAssignment}
+                  onInputChange={handleAssignmentInputChange}
+                  onCancel={resetEditingItemState}
+                  onSave={handleSaveItemAssignedTo}
+                  saveDisabled={editingAssignedTotal !== editingItemQuantity}
+                />
               )}
             </View>
           ))}
@@ -344,12 +416,9 @@ export default function BillDetailScreen() {
             <View style={styles.itemsBreakdownSection}>
               <Text style={styles.itemsBreakdownTitle}>Items Breakdown</Text>
               {bill.items.map((item: any) => {
-                const assignedParticipants = item.assigned_to && item.assigned_to.length > 0 
-                  ? bill.participants.filter((p: any) => item.assigned_to.includes(p.participant_id))
-                  : bill.participants;
-                
+                const assignment = itemAssignmentsById[item.item_id] || {};
+                const assignedParticipants = bill.participants.filter((p: any) => (assignment[p.participant_id] || 0) > 0);
                 const itemTotal = item.price * item.quantity;
-                const perPersonAmount = assignedParticipants.length > 0 ? itemTotal / assignedParticipants.length : 0;
 
                 return (
                   <View key={item.item_id} style={styles.itemBreakdownCard}>
@@ -362,16 +431,20 @@ export default function BillDetailScreen() {
                     </View>
                     
                     <View style={styles.itemAssignedTo}>
-                      <Text style={styles.assignedLabel}>Split among:</Text>
+                      <Text style={styles.assignedLabel}>Assigned units:</Text>
                       {assignedParticipants.map((p: any) => (
                         <View key={p.participant_id} style={styles.assignedPersonRow}>
                           <View style={styles.assignedPersonAvatar}>
                             <Text style={styles.assignedPersonAvatarText}>{p.name[0].toUpperCase()}</Text>
                           </View>
                           <Text style={styles.assignedPersonName}>{p.name}</Text>
-                          <Text style={styles.assignedPersonAmount}>{bill.currency} {perPersonAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+                          <Text style={styles.assignedPersonUnits}>x{assignment[p.participant_id]}</Text>
+                          <Text style={styles.assignedPersonAmount}>{bill.currency} {(assignment[p.participant_id] * item.price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
                         </View>
                       ))}
+                      {assignedParticipants.length === 0 && (
+                        <Text style={styles.unassignedHint}>No quantity assigned yet</Text>
+                      )}
                     </View>
                   </View>
                 );
@@ -496,16 +569,6 @@ const styles = StyleSheet.create({
   assignedInfoTags: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   assignedTag: { backgroundColor: Colors.primary + '30', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: Colors.primary + '60' },
   assignedTagText: { fontSize: 12, fontWeight: '500', color: Colors.primary },
-  itemEditSection: { paddingHorizontal: 16, paddingVertical: 12, backgroundColor: Colors.surface, borderTopWidth: 1, borderTopColor: Colors.border, marginTop: 8 },
-  editSectionTitle: { fontSize: 13, fontWeight: '600', color: Colors.white, marginBottom: 12 },
-  participantCheckRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border + '40' },
-  checkboxContainer: { marginRight: 12 },
-  checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 2, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center' },
-  checkboxChecked: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  participantCheckLabel: { fontSize: 14, fontWeight: '500', color: Colors.white, flex: 1 },
-  editActionRow: { flexDirection: 'row', gap: 8, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: Colors.border },
-  editBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
-  editBtnCancel: { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
-  editBtnSave: { backgroundColor: Colors.primary },
-  editBtnText: { fontSize: 13, fontWeight: '600', color: Colors.white },
+  assignedPersonUnits: { width: 40, fontSize: 12, color: Colors.textMuted, fontWeight: '600', textAlign: 'right' },
+  unassignedHint: { fontSize: 12, color: Colors.warning, fontWeight: '500' },
 });

@@ -35,7 +35,7 @@ export default function AuthCallback() {
     };
 
     processAuth();
-  }, []);
+  }, [login, router]);
 
   return (
     <View style={styles.container}>

@@ -76,3 +76,31 @@ class TestItemsManagement:
         # Verify total was recalculated
         assert "total_amount" in data, "total_amount missing"
         print(f"✓ Bill total recalculated after deletion: {data['total_amount']}")
+
+    def test_update_item_invalid_assignment_returns_400(self, api_client, auth_headers, test_bill_id):
+        """Test invalid assignment sum/overflow is rejected by API."""
+        get_response = api_client.get(f"{BASE_URL}/api/bills/{test_bill_id}", headers=auth_headers)
+        assert get_response.status_code == 200, "Failed to get bill"
+
+        bill_data = get_response.json()
+        items = bill_data.get("items", [])
+        participants = bill_data.get("participants", [])
+        if not items or not participants:
+            pytest.skip("Missing items or participants for invalid assignment test")
+
+        item = items[0]
+        participant_id = participants[0]["participant_id"]
+        invalid_qty = int(item.get("quantity", 1)) + 1
+
+        payload = {
+            "assigned_to": [participant_id],
+            "assigned_quantities": {participant_id: invalid_qty},
+            "assignments": [{"userId": participant_id, "quantity": invalid_qty}],
+        }
+        response = api_client.put(
+            f"{BASE_URL}/api/bills/{test_bill_id}/items/{item['item_id']}",
+            json=payload,
+            headers=auth_headers,
+        )
+        assert response.status_code == 400, f"Expected 400 for overflow assignment, got {response.status_code}: {response.text}"
+        print("✓ Invalid assignment correctly rejected with 400")

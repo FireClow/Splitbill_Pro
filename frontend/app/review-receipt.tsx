@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -13,14 +13,11 @@ import {
   Platform,
   Image,
   Dimensions,
-  PanResponder,
   ActivityIndicator,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useAuth } from '../contexts/AuthContext';
-import * as api from '../utils/api';
 import { getOcrUrl } from '../utils/config';
 
 interface ReceiptItem {
@@ -56,7 +53,6 @@ const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
 export default function ReviewReceiptScreen() {
   const router = useRouter();
-  const { user } = useAuth();
   const params = useLocalSearchParams();
   
   const scannedData = params.scannedData
@@ -77,16 +73,13 @@ export default function ReviewReceiptScreen() {
 
   // Image zoom/crop state
   const [zoomLevel, setZoomLevel] = useState(1);
-  const [panX, setPanX] = useState(0);
-  const [panY, setPanY] = useState(0);
   const [showCropMode, setShowCropMode] = useState(false);
-  const [cropArea, setCropArea] = useState<CropArea>({
+  const [cropArea] = useState<CropArea>({
     x: 20,
     y: 50,
     width: screenWidth - 40,
     height: Math.min(800, screenHeight - 300), // Much larger default crop area
   });
-  const [isDraggingCrop, setIsDraggingCrop] = useState<string | null>(null);
   const [isRescanning, setIsRescanning] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -107,37 +100,6 @@ export default function ReviewReceiptScreen() {
       subtotal: parseFloat(itemsSubtotal.toFixed(2)),
       total: parseFloat(calculatedTotal.toFixed(2)),
     };
-  };
-
-  // Handle crop rectangle drag
-  const handleCropDrag = (edge: string, deltaX: number, deltaY: number) => {
-    const newCrop = { ...cropArea };
-    const minSize = 50;
-
-    switch (edge) {
-      case 'tl':
-        newCrop.x = Math.max(0, cropArea.x + deltaX);
-        newCrop.y = Math.max(0, cropArea.y + deltaY);
-        newCrop.width = Math.max(minSize, cropArea.width - deltaX);
-        newCrop.height = Math.max(minSize, cropArea.height - deltaY);
-        break;
-      case 'tr':
-        newCrop.y = Math.max(0, cropArea.y + deltaY);
-        newCrop.width = Math.max(minSize, cropArea.width + deltaX);
-        newCrop.height = Math.max(minSize, cropArea.height - deltaY);
-        break;
-      case 'bl':
-        newCrop.x = Math.max(0, cropArea.x + deltaX);
-        newCrop.width = Math.max(minSize, cropArea.width - deltaX);
-        newCrop.height = Math.max(minSize, cropArea.height + deltaY);
-        break;
-      case 'br':
-        newCrop.width = Math.max(minSize, cropArea.width + deltaX);
-        newCrop.height = Math.max(minSize, cropArea.height + deltaY);
-        break;
-    }
-
-    setCropArea(newCrop);
   };
 
   // Rescan with cropped area
@@ -378,8 +340,8 @@ export default function ReviewReceiptScreen() {
                   {
                     transform: [
                       { scale: zoomLevel },
-                      { translateX: panX },
-                      { translateY: panY },
+                      { translateX: 0 },
+                      { translateY: 0 },
                     ],
                   },
                 ]}
@@ -399,7 +361,7 @@ export default function ReviewReceiptScreen() {
               >
                 {/* Crop handles */}
                 {(['tl', 'tr', 'bl', 'br'] as const).map((corner) => (
-                  <TouchableOpacity
+                  <View
                     key={corner}
                     style={[
                       styles.cropHandle,
@@ -410,7 +372,7 @@ export default function ReviewReceiptScreen() {
                     ]}
                   >
                     <View style={styles.handleDot} />
-                  </TouchableOpacity>
+                  </View>
                 ))}
               </View>
             </View>

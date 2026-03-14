@@ -1,0 +1,95 @@
+{
+  "info": {
+    "name": "SplitBill API - QA Regression",
+    "description": "Collection for validating core SplitBill APIs, including assignment and error handling cases.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8001" },
+    { "key": "token", "value": "" },
+    { "key": "billId", "value": "" },
+    { "key": "itemId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth Session",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": { "raw": "{{baseUrl}}/api/auth/session", "host": ["{{baseUrl}}"], "path": ["api", "auth", "session"] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"session_id\": \"manual-qa-session-001\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": { "raw": "{{baseUrl}}/api/health", "host": ["{{baseUrl}}"], "path": ["api", "health"] }
+      }
+    },
+    {
+      "name": "Create Bill - Valid per_item",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/api/bills", "host": ["{{baseUrl}}"], "path": ["api", "bills"] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"QA Per Item Bill\",\n  \"currency\": \"USD\",\n  \"items\": [\n    {\n      \"name\": \"Sushi\",\n      \"price\": 6,\n      \"quantity\": 3,\n      \"assigned_to\": [\"u1\", \"u2\"],\n      \"assigned_quantities\": {\"u1\": 2, \"u2\": 1},\n      \"assignments\": [\n        {\"userId\": \"u1\", \"quantity\": 2},\n        {\"userId\": \"u2\", \"quantity\": 1}\n      ]\n    }\n  ],\n  \"participants\": [\n    {\"name\": \"Alice\", \"client_id\": \"u1\"},\n    {\"name\": \"Bob\", \"client_id\": \"u2\"}\n  ],\n  \"tax_type\": \"fixed\",\n  \"tax_value\": 0,\n  \"service_charge\": 0,\n  \"split_method\": \"per_item\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Create Bill - Invalid Assignment Overflow",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/api/bills", "host": ["{{baseUrl}}"], "path": ["api", "bills"] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"QA Overflow\",\n  \"currency\": \"USD\",\n  \"items\": [\n    {\n      \"name\": \"Soup\",\n      \"price\": 10,\n      \"quantity\": 2,\n      \"assigned_to\": [\"u1\"],\n      \"assigned_quantities\": {\"u1\": 3},\n      \"assignments\": [{\"userId\": \"u1\", \"quantity\": 3}]\n    }\n  ],\n  \"participants\": [\n    {\"name\": \"Alice\", \"client_id\": \"u1\"}\n  ],\n  \"tax_type\": \"fixed\",\n  \"tax_value\": 0,\n  \"service_charge\": 0,\n  \"split_method\": \"per_item\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Get Bills",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": { "raw": "{{baseUrl}}/api/bills", "host": ["{{baseUrl}}"], "path": ["api", "bills"] }
+      }
+    },
+    {
+      "name": "Get Bill Detail",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": { "raw": "{{baseUrl}}/api/bills/{{billId}}", "host": ["{{baseUrl}}"], "path": ["api", "bills", "{{billId}}"] }
+      }
+    },
+    {
+      "name": "Update Item - Invalid Under Assignment",
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{token}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/api/bills/{{billId}}/items/{{itemId}}", "host": ["{{baseUrl}}"], "path": ["api", "bills", "{{billId}}", "items", "{{itemId}}"] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"assigned_to\": [\"u1\"],\n  \"assigned_quantities\": {\"u1\": 1},\n  \"assignments\": [{\"userId\": \"u1\", \"quantity\": 1}]\n}"
+        }
+      }
+    }
+  ]
+}

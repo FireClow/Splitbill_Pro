@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -7,14 +7,20 @@ import { api, ApiError } from '../utils/api';
 import { Colors } from '../utils/colors';
 import { useAuth } from '../contexts/AuthContext';
 import { useInterstitialAd } from '../hooks/useInterstitialAd';
-import AssignItemsScreen from '../components/AssignItemsScreen';
+import { ItemAssignmentEditor } from '../components/ItemAssignmentEditor';
+import {
+  applyClampedAssignment,
+  getAssignedTotal,
+  getSafeItemQuantity,
+  mapAssignmentsToApiList,
+} from '../utils/itemAssignments';
 
 interface ItemDraft {
   id: string;
   name: string;
   price: string;
   quantity: string;
-  assignedTo: string[];
+  assignments: Record<string, number>;
 }
 
 interface ParticipantDraft {
@@ -43,10 +49,11 @@ export default function CreateBillScreen() {
   const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
 
   const [items, setItems] = useState<ItemDraft[]>([
-    { id: createId('item'), name: '', price: '', quantity: '1', assignedTo: [] },
+    { id: createId('item'), name: '', price: '', quantity: '1', assignments: {} },
   ]);
   const [participants, setParticipants] = useState<ParticipantDraft[]>([]);
   const [newParticipantName, setNewParticipantName] = useState('');
+  const [assignmentWarnings, setAssignmentWarnings] = useState<Record<string, string>>({});
 
   const [taxType, setTaxType] = useState<'percentage' | 'fixed'>('percentage');
   const [taxValue, setTaxValue] = useState('');
@@ -65,7 +72,7 @@ export default function CreateBillScreen() {
             name: item.name,
             price: item.price.toString(),
             quantity: item.quantity.toString(),
-            assignedTo: [],
+            assignments: {},
           })));
         }
         
@@ -92,9 +99,19 @@ export default function CreateBillScreen() {
 
   const addItem = () => setItems([
     ...items,
-    { id: createId('item'), name: '', price: '', quantity: '1', assignedTo: [] },
+    { id: createId('item'), name: '', price: '', quantity: '1', assignments: {} },
   ]);
-  const removeItem = (i: number) => setItems(items.filter((_, idx) => idx !== i));
+  const removeItem = (i: number) => {
+    const itemId = items[i]?.id;
+    setItems(items.filter((_, idx) => idx !== i));
+    if (itemId) {
+      setAssignmentWarnings((prev) => {
+        const updated = { ...prev };
+        delete updated[itemId];
+        return updated;
+      });
+    }
+  };
   const updateItem = (i: number, field: keyof ItemDraft, value: string) => {
     const updated = [...items];
     updated[i] = { ...updated[i], [field]: value };
@@ -117,26 +134,61 @@ export default function CreateBillScreen() {
       setItems(prevItems =>
         prevItems.map(item => ({
           ...item,
-          assignedTo: item.assignedTo.filter(pid => pid !== participantId),
+          assignments: Object.fromEntries(
+            Object.entries(item.assignments).filter(([pid]) => pid !== participantId)
+          ),
         }))
       );
     }
   };
 
-  const toggleItemAssignment = (itemId: string, participantId: string) => {
-    setItems(prevItems =>
-      prevItems.map(item => {
-        if (item.id !== itemId) return item;
-        const alreadyAssigned = item.assignedTo.includes(participantId);
-        return {
-          ...item,
-          assignedTo: alreadyAssigned
-            ? item.assignedTo.filter(id => id !== participantId)
-            : [...item.assignedTo, participantId],
-        };
-      })
-    );
-  };
+  const getItemQuantity = useCallback((item: ItemDraft) => getSafeItemQuantity(item.quantity), []);
+
+  const updateDraftAssignment = useCallback((itemId: string, participantId: string, requestedQty: number) => {
+    setItems(prevItems => prevItems.map(item => {
+      if (item.id !== itemId) return item;
+
+      const quantity = getItemQuantity(item);
+      const currentAssignments = item.assignments || {};
+      const { nextAssignments, maxAllowed, wasClamped } = applyClampedAssignment(
+        currentAssignments,
+        participantId,
+        requestedQty,
+        quantity
+      );
+
+      setAssignmentWarnings((prev) => {
+        const updated = { ...prev };
+        if (wasClamped) {
+          updated[itemId] = `Cannot assign more than remaining quantity. Max for this user: ${maxAllowed}.`;
+        } else {
+          delete updated[itemId];
+        }
+        return updated;
+      });
+
+      return {
+        ...item,
+        assignments: nextAssignments,
+      };
+    }));
+  }, [getItemQuantity]);
+
+  const adjustDraftAssignment = useCallback((itemId: string, participantId: string, delta: number) => {
+    const item = items.find(i => i.id === itemId);
+    if (!item) return;
+    const current = item.assignments?.[participantId] || 0;
+    updateDraftAssignment(itemId, participantId, current + delta);
+  }, [items, updateDraftAssignment]);
+
+  const handleDraftAssignmentInput = useCallback((itemId: string, participantId: string, text: string) => {
+    const parsed = Number.parseInt(text.replace(/[^0-9]/g, ''), 10);
+    if (Number.isNaN(parsed)) {
+      updateDraftAssignment(itemId, participantId, 0);
+      return;
+    }
+    updateDraftAssignment(itemId, participantId, parsed);
+  }, [updateDraftAssignment]);
 
   // Check if user's own name is in participants
   const userNameAdded = user?.name && participants.some(p => p.name.toLowerCase() === user.name.toLowerCase());
@@ -158,9 +210,12 @@ export default function CreateBillScreen() {
     }
     if (currentStep === 3) { // Assign
       const validItems = items.filter(i => i.name.trim() && parseFloat(i.price) > 0);
-      const missingAssignment = validItems.find(i => i.assignedTo.length === 0);
-      if (missingAssignment) {
-        return 'Please assign this item to at least one participant.';
+      for (const item of validItems) {
+        const expected = getItemQuantity(item);
+        const assigned = getAssignedTotal(item.assignments || {});
+        if (assigned !== expected) {
+          return `Item "${item.name}" assignment must equal quantity (${expected}). Current: ${assigned}.`;
+        }
       }
       return null;
     }
@@ -195,7 +250,7 @@ export default function CreateBillScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [title, currency, items, participants, taxType, taxValue, serviceCharge]);
 
-  const calculateByItemShares = () => {
+  const calculateByItemShares = useCallback(() => {
     const shares: Record<string, number> = {};
     participants.forEach(participant => {
       shares[participant.id] = 0;
@@ -203,22 +258,16 @@ export default function CreateBillScreen() {
 
     const validItems = items.filter(i => i.name.trim() && parseFloat(i.price) > 0);
     validItems.forEach(item => {
-      if (!item.assignedTo.length) return;
-
       const unitPrice = parseFloat(item.price) || 0;
-      const quantity = Math.max(parseInt(item.quantity, 10) || 1, 1);
-      const costPerUnit = (unitPrice * quantity) / quantity;
-      const lineShare = (costPerUnit * quantity) / item.assignedTo.length;
-
-      item.assignedTo.forEach(participantId => {
+      Object.entries(item.assignments || {}).forEach(([participantId, assignedQty]) => {
         if (shares[participantId] !== undefined) {
-          shares[participantId] += lineShare;
+          shares[participantId] += unitPrice * assignedQty;
         }
       });
     });
 
     return shares;
-  };
+  }, [items, participants]);
 
   const handleSave = async () => {
     if (createBlockedReason) {
@@ -230,10 +279,13 @@ export default function CreateBillScreen() {
     const validItems = items.filter(i => i.name.trim() && parseFloat(i.price) > 0);
     if (validItems.length === 0) { Alert.alert('Error', 'Please add at least one item'); return; }
     if (participants.length === 0) { Alert.alert('Error', 'Please add at least one person (including yourself)'); return; }
-    const hasUnassigned = validItems.some(i => i.assignedTo.length === 0);
-    if (hasUnassigned) {
-      Alert.alert('Warning', 'Please assign this item to at least one participant.');
-      return;
+    for (const item of validItems) {
+      const assigned = getAssignedTotal(item.assignments || {});
+      const expected = getItemQuantity(item);
+      if (assigned !== expected) {
+        Alert.alert('Warning', `Assignment for "${item.name}" must equal quantity (${expected}). Current: ${assigned}.`);
+        return;
+      }
     }
 
     setSaving(true);
@@ -245,7 +297,9 @@ export default function CreateBillScreen() {
           name: i.name.trim(),
           price: parseFloat(i.price),
           quantity: parseInt(i.quantity) || 1,
-          assigned_to: i.assignedTo,
+          assigned_to: Object.keys(i.assignments || {}),
+          assigned_quantities: i.assignments || {},
+          assignments: mapAssignmentsToApiList(i.assignments || {}),
         })),
         participants: participants.map(p => ({
           name: p.name,
@@ -276,7 +330,11 @@ export default function CreateBillScreen() {
   };
 
   const steps = ['Details', 'Items', 'People', 'Assign', 'Review'];
-  const byItemShares = calculateByItemShares();
+  const validItems = useMemo(
+    () => items.filter(i => i.name.trim() && parseFloat(i.price) > 0),
+    [items]
+  );
+  const byItemShares = useMemo(() => calculateByItemShares(), [calculateByItemShares]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -401,13 +459,50 @@ export default function CreateBillScreen() {
           )}
 
           {step === 3 && (
-            <AssignItemsScreen
-              items={items.filter(i => i.name.trim() && parseFloat(i.price) > 0)}
-              participants={participants}
-              currency={currency}
-              formatCurrency={formatCurrency}
-              onToggleAssignment={toggleItemAssignment}
-            />
+            <View style={styles.stepContent}>
+              <Text style={styles.stepTitle}>Assign Items</Text>
+              <Text style={styles.stepSubtitle}>Set exact quantity consumed by each participant.</Text>
+              {validItems.length === 0 ? (
+                <View style={styles.infoCard}>
+                  <Text style={styles.infoText}>Add items first before assigning.</Text>
+                </View>
+              ) : participants.length === 0 ? (
+                <View style={styles.infoCard}>
+                  <Text style={styles.infoText}>Add participants first before assigning items.</Text>
+                </View>
+              ) : (
+                validItems.map((item) => {
+                  const itemQuantity = getItemQuantity(item);
+                  const assignedTotal = getAssignedTotal(item.assignments || {});
+                  const remaining = Math.max(0, itemQuantity - assignedTotal);
+
+                  return (
+                    <View key={item.id} style={styles.assignEditorCard}>
+                      <View style={styles.assignEditorHeader}>
+                        <Text style={styles.assignEditorItemName}>{item.name}</Text>
+                        <Text style={styles.assignEditorItemMeta}>
+                          x{itemQuantity} @ {currency} {formatCurrency(parseFloat(item.price) || 0)}
+                        </Text>
+                      </View>
+                      <ItemAssignmentEditor
+                        title=""
+                        participants={participants.map(p => ({ participant_id: p.id, name: p.name }))}
+                        assignments={item.assignments || {}}
+                        unitPrice={parseFloat(item.price) || 0}
+                        currency={currency}
+                        itemQuantity={itemQuantity}
+                        assignedTotal={assignedTotal}
+                        remainingQuantity={remaining}
+                        warning={assignmentWarnings[item.id] || ''}
+                        onAdjust={(participantId, delta) => adjustDraftAssignment(item.id, participantId, delta)}
+                        onInputChange={(participantId, text) => handleDraftAssignmentInput(item.id, participantId, text)}
+                        showActions={false}
+                      />
+                    </View>
+                  );
+                })
+              )}
+            </View>
           )}
 
           {step === 4 && (
@@ -417,8 +512,8 @@ export default function CreateBillScreen() {
                 <Text style={styles.reviewLabel}>BILL TITLE</Text>
                 <Text style={styles.reviewValue}>{title || 'Untitled'}</Text>
                 <View style={styles.reviewDivider} />
-                <Text style={styles.reviewLabel}>ITEMS ({items.filter(i => i.name && parseFloat(i.price) > 0).length})</Text>
-                {items.filter(i => i.name && parseFloat(i.price) > 0).map((item, i) => (
+                <Text style={styles.reviewLabel}>ITEMS ({validItems.length})</Text>
+                {validItems.map((item, i) => (
                   <View key={i} style={styles.reviewItem}>
                     <Text style={styles.reviewItemName}>{item.name} x{item.quantity || 1}</Text>
                     <Text style={styles.reviewItemPrice}>{currency} {formatCurrency(parseFloat(item.price) * (parseInt(item.quantity) || 1))}</Text>
@@ -427,10 +522,13 @@ export default function CreateBillScreen() {
 
                 <View style={styles.reviewDivider} />
                 <Text style={styles.reviewLabel}>ASSIGNMENT</Text>
-                {items.filter(i => i.name && parseFloat(i.price) > 0).map((item, i) => {
-                  const assignedNames = participants
-                    .filter(p => item.assignedTo.includes(p.id))
-                    .map(p => p.name);
+                {validItems.map((item, i) => {
+                  const assignedRows = Object.entries(item.assignments || {})
+                    .filter(([, qty]) => qty > 0)
+                    .map(([participantId, qty]) => {
+                      const participant = participants.find(p => p.id === participantId);
+                      return participant ? `${participant.name} x${qty}` : `${participantId} x${qty}`;
+                    });
 
                   return (
                     <View key={`assign_${i}`} style={styles.assignmentReviewBlock}>
@@ -438,7 +536,7 @@ export default function CreateBillScreen() {
                         {item.name} x{item.quantity || 1}
                       </Text>
                       <Text style={styles.assignmentReviewParticipants}>
-                        Assigned to: {assignedNames.length ? assignedNames.join(', ') : 'Unassigned'}
+                        Assigned to: {assignedRows.length ? assignedRows.join(', ') : 'Unassigned'}
                       </Text>
                     </View>
                   );
@@ -573,6 +671,12 @@ const styles = StyleSheet.create({
   participantAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.surfaceHighlight, justifyContent: 'center', alignItems: 'center' },
   participantAvatarText: { fontSize: 16, fontWeight: '600', color: Colors.white },
   participantName: { flex: 1, fontSize: 16, fontWeight: '500', color: Colors.white },
+  infoCard: { backgroundColor: Colors.surface, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, padding: 16 },
+  infoText: { color: Colors.textSecondary, fontSize: 14 },
+  assignEditorCard: { backgroundColor: Colors.surface, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, marginBottom: 12, overflow: 'hidden' },
+  assignEditorHeader: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 },
+  assignEditorItemName: { fontSize: 16, fontWeight: '700', color: Colors.white },
+  assignEditorItemMeta: { fontSize: 13, color: Colors.textSecondary, marginTop: 4 },
   splitMethodItem: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: Colors.border },
   splitMethodActive: { borderBottomColor: Colors.primary + '30' },
   splitMethodText: { fontSize: 16, fontWeight: '500', color: Colors.muted },

@@ -43,6 +43,32 @@ class TestSplitsAndPayments:
 
     def test_recalculate_split_per_item(self, api_client, auth_headers, test_bill_id):
         """Test POST /api/bills/{bill_id}/split - Recalculate with per_item split"""
+        # Ensure each item has valid quantity assignment before switching to per_item.
+        bill_response = api_client.get(
+            f"{BASE_URL}/api/bills/{test_bill_id}",
+            headers=auth_headers
+        )
+        assert bill_response.status_code == 200, f"Failed to get bill for assignment setup: {bill_response.status_code}"
+        bill_data = bill_response.json()
+        participants = bill_data.get("participants", [])
+        items = bill_data.get("items", [])
+        assert participants, "Test bill has no participants"
+
+        first_participant_id = participants[0]["participant_id"]
+        for item in items:
+            update_payload = {
+                "assigned_to": [first_participant_id],
+                "assigned_quantities": {first_participant_id: item.get("quantity", 1)}
+            }
+            update_response = api_client.put(
+                f"{BASE_URL}/api/bills/{test_bill_id}/items/{item['item_id']}",
+                json=update_payload,
+                headers=auth_headers
+            )
+            assert update_response.status_code == 200, (
+                f"Failed to set item assignment for {item['item_id']}: {update_response.status_code} {update_response.text}"
+            )
+
         split_payload = {
             "method": "per_item"
         }
