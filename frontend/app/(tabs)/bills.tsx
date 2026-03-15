@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, RefreshControl, ActivityIndicator, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '../../utils/api';
 import { Colors } from '../../utils/colors';
@@ -37,6 +38,12 @@ export default function BillsScreen() {
   }, []);
 
   useEffect(() => { loadBills(); }, [loadBills]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadBills();
+    }, [loadBills])
+  );
 
   const filteredBills = bills.filter((b) => {
     const matchSearch = b.title.toLowerCase().includes(search.toLowerCase());

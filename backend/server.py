@@ -20,9 +20,9 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from receipt_processor import ReceiptParser, OCREngine, OCRError
 from ocr_service import (
-    build_missing_tesseract_error,
+    build_missing_ocr_error,
     decode_base64_image_data,
-    get_tesseract_status,
+    get_ocr_runtime_status,
     validate_receipt_upload,
 )
 from item_assignment import (
@@ -60,12 +60,12 @@ async def initialize_database_indexes() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await initialize_database_indexes()
-    ocr_status = get_tesseract_status()
+    ocr_status = get_ocr_runtime_status()
     _app.state.ocr_dependency = ocr_status
     if ocr_status.get("available"):
-        logger.info(f"OCR dependency ready: tesseract {ocr_status.get('version')}")
+        logger.info(f"OCR dependency ready: provider={ocr_status.get('provider')}")
     else:
-        logger.warning("OCR dependency missing: Tesseract OCR is not installed")
+        logger.warning("OCR dependency missing: no OCR provider is available")
     logger.info("SplitBill Pro API v2.0.0 started - all indexes created")
     try:
         yield
@@ -1196,9 +1196,9 @@ async def scan_receipt(
     Returns structured receipt data ready for bill creation.
     """
     try:
-        ocr_status = get_tesseract_status()
+        ocr_status = get_ocr_runtime_status()
         if not ocr_status.get("available"):
-            raise HTTPException(status_code=500, detail=build_missing_tesseract_error())
+            raise HTTPException(status_code=500, detail=build_missing_ocr_error())
 
         image_bytes = b""
         image_source = ""
@@ -1297,8 +1297,8 @@ async def scan_receipt(
     except OCRError as e:
         logger.error(f"[OCR] OCR failed: {e}", exc_info=True)
         error_text = str(e).lower()
-        if "tesseract" in error_text and "not installed" in error_text:
-            raise HTTPException(status_code=500, detail=build_missing_tesseract_error())
+        if "no ocr provider" in error_text:
+            raise HTTPException(status_code=500, detail=build_missing_ocr_error())
         if "empty text" in error_text:
             raise HTTPException(status_code=400, detail="OCR returned empty text. Please retake the receipt photo in better lighting")
         raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
@@ -1318,9 +1318,9 @@ async def rescan_cropped_receipt(
 ):
     """Rescan a cropped portion of a previously scanned receipt."""
     try:
-        ocr_status = get_tesseract_status()
+        ocr_status = get_ocr_runtime_status()
         if not ocr_status.get("available"):
-            raise HTTPException(status_code=500, detail=build_missing_tesseract_error())
+            raise HTTPException(status_code=500, detail=build_missing_ocr_error())
 
         receipt = await db.receipt_images.find_one({"image_id": image_id})
         if not receipt:
@@ -1506,7 +1506,12 @@ app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
+        "http://localhost:19006",
+        "http://127.0.0.1:19006",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )

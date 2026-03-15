@@ -287,7 +287,7 @@ export default function ScanReceiptScreen() {
     try {
       setLoading(true);
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: false,
         aspect: [4, 3],
         quality: 0.8,
@@ -795,11 +795,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
+    boxShadow: '0px 2px 8px rgba(0,0,0,0.3)',
   },
   captureButtonDisabled: {
     opacity: 0.5,

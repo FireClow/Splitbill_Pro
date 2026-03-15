@@ -629,11 +629,7 @@ const styles = StyleSheet.create({
   },
   currentWeekBar: {
     backgroundColor: Colors.success,
-    shadowColor: Colors.success,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    elevation: 8,
+    boxShadow: `0px 0px 8px ${Colors.success}66`,
   },
   currentWeekBarContainer: {
     borderRadius: 12,

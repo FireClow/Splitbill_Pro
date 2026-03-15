@@ -8,7 +8,7 @@ import { Platform } from 'react-native';
 
 // Development IP - change this if your laptop IP changes
 const DEV_API_IP = '192.168.1.3';
-const DEV_API_PORT = 8001;
+const DEV_API_PORT = 8000;
 
 // Production API endpoint
 const PROD_API_URL = 'https://api.splitbill.com';

@@ -14,13 +14,13 @@ Features:
 import re
 from typing import Dict, List, Any
 import pytesseract
-from PIL import Image, ImageFilter, ImageOps, ImageEnhance
+from PIL import Image, ImageFilter, ImageOps, ImageEnhance, ImageStat
 import io
 import logging
 import os
 from datetime import datetime
 import numpy as np
-from ocr_service import get_tesseract_status
+from ocr_service import extract_text_google_vision, get_ocr_runtime_status
 
 logger = logging.getLogger("receipt_processor")
 
@@ -52,6 +52,7 @@ class ReceiptParser:
         """Convert Indonesian/English number format to float."""
         if not value:
             return 0.0
+        value = re.sub(r'(?i)\b(?:rp|idr|usd|eur|sgd|chf)\b', '', value)
         # Remove spaces
         value = value.replace(' ', '')
         # Handle both comma and dot as decimal separator
@@ -90,7 +91,8 @@ class ReceiptParser:
     def extract_currency(text: str) -> str:
         """Detect currency from text."""
         text_upper = text.upper()
-        for currency, pattern in ReceiptParser.CURRENCY_PATTERNS.items():
+        for currency in ['IDR', 'SGD', 'EUR', 'USD']:
+            pattern = ReceiptParser.CURRENCY_PATTERNS[currency]
             if re.search(pattern, text_upper):
                 return currency
         return 'USD'  # Default currency
@@ -159,6 +161,24 @@ class ReceiptParser:
                 name = match.group(1).strip()
                 qty = int(match.group(2))
                 price = ReceiptParser.normalize_number(match.group(3))  # Use unit price (group 3)
+
+            # PATTERN 1B: European-style line with quantity prefix, e.g.
+            # "2xLatte Macchiato  a  4.50 CHF  9.00"
+            if not name:
+                match = re.match(
+                    r'^(\d+)\s*[xX×]\s*([A-Za-z][^\d]{1,80}?)\s*(?:a|@|à)?\s*([\d.,]+)\s*(?:[A-Z]{3}|Rp|IDR|USD|EUR|SGD|CHF)?\s*([\d.,]+)?\s*$',
+                    line,
+                    re.IGNORECASE,
+                )
+                if match:
+                    qty = int(match.group(1))
+                    name = match.group(2).strip()
+                    unit_price = ReceiptParser.normalize_number(match.group(3))
+                    total_price = ReceiptParser.normalize_number(match.group(4)) if match.group(4) else 0.0
+                    if unit_price > 0:
+                        price = unit_price
+                    elif total_price > 0 and qty > 0:
+                        price = total_price / qty
             
             # PATTERN 2: Single-line without total "3 x Rp25.000" (with OCR error tolerance)
             # Handles: kp, rpi, rpo, Rp variations
@@ -226,6 +246,43 @@ class ReceiptParser:
                 })
         
         return items
+
+    @staticmethod
+    def _sanitize_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Remove clearly implausible OCR items caused by merged numeric artifacts."""
+        if len(items) < 2:
+            return items
+
+        positive_prices = [float(item.get('price', 0.0)) for item in items if float(item.get('price', 0.0)) > 0]
+        if len(positive_prices) < 2:
+            return items
+
+        min_price = min(positive_prices)
+        sanitized: List[Dict[str, Any]] = []
+
+        for item in items:
+            price = float(item.get('price', 0.0))
+            name = str(item.get('name', ''))
+            alnum_name = re.sub(r'[^a-zA-Z0-9]', '', name)
+            digit_ratio = (sum(ch.isdigit() for ch in alnum_name) / len(alnum_name)) if alnum_name else 0.0
+
+            # Typical OCR failure: long mixed token + price inflated by merged digits.
+            suspicious_outlier = (
+                price >= 500000
+                and min_price > 0
+                and (price / min_price) >= 80
+                and digit_ratio >= 0.25
+            )
+
+            if not suspicious_outlier:
+                sanitized.append(item)
+            else:
+                logger.warning(
+                    f"[OCR] Dropping suspicious outlier item: name='{name}', price={price}, min_price={min_price}, digit_ratio={digit_ratio:.2f}"
+                )
+
+        # Never drop all items; fallback to original extraction if filtering was too aggressive.
+        return sanitized if sanitized else items
     
     @staticmethod
     def extract_totals(text: str) -> Dict[str, float]:
@@ -316,6 +373,7 @@ class ReceiptParser:
         
         # === PARSE ITEMS ===
         items = cls.extract_items(ocr_text)
+        items = cls._sanitize_items(items)
         logger.info(f"Items extracted: {len(items)}")
         for idx, item in enumerate(items, 1):
             logger.info(f"  {idx}. {item['name']} - {item['quantity']}x {item['price']} = {item['subtotal']}")
@@ -398,6 +456,15 @@ class ReceiptParser:
                 consistency = max(0, 1 - min(cv / 3, 1))
                 confidence['price_consistency'] = consistency
                 confidence['overall'] += 0.15 * consistency
+
+            positive_prices = [p for p in prices if p > 0]
+            if len(positive_prices) >= 2:
+                skew_ratio = max(positive_prices) / max(min(positive_prices), 1)
+                # Penalize extreme skew typical of OCR merged-digit failure.
+                if skew_ratio > 120:
+                    confidence['overall'] = max(0.0, confidence['overall'] - 0.20)
+                elif skew_ratio > 60:
+                    confidence['overall'] = max(0.0, confidence['overall'] - 0.10)
         else:
             confidence['price_consistency'] = 0.5
         
@@ -478,9 +545,30 @@ class OCREngine:
     }
     
     @staticmethod
+    def _estimate_photo_quality(image: Image.Image) -> Dict[str, float]:
+        """Estimate simple photo quality metrics useful for OCR diagnostics."""
+        grayscale = ImageOps.grayscale(image)
+        contrast = float(ImageStat.Stat(grayscale).stddev[0])
+
+        # Edge variance is a lightweight proxy for sharpness/blur.
+        edges = grayscale.filter(ImageFilter.FIND_EDGES)
+        sharpness = float(ImageStat.Stat(edges).var[0])
+
+        return {
+            'contrast': contrast,
+            'sharpness': sharpness,
+        }
+
+    @staticmethod
+    def _prepare_photo_image(image: Image.Image) -> Image.Image:
+        """Normalize orientation for phone photos and convert to RGB."""
+        oriented = ImageOps.exif_transpose(image)
+        return oriented.convert('RGB')
+
+    @staticmethod
     def _preprocess_image(image: Image.Image) -> Image.Image:
         """Preprocess receipt image: resize -> grayscale -> threshold."""
-        image = image.convert('RGB')
+        image = OCREngine._prepare_photo_image(image)
         width, height = image.size
         logger.info(f"Original size: {width}x{height}")
 
@@ -506,6 +594,63 @@ class OCREngine:
         logger.info(f"Preprocessing complete with threshold={threshold_value}")
 
         return binary
+
+    @staticmethod
+    def _build_ocr_variants(image: Image.Image) -> List[Image.Image]:
+        """Build a small set of image variants to improve OCR robustness."""
+        base = OCREngine._prepare_photo_image(image)
+        primary = OCREngine._preprocess_image(base)
+
+        grayscale = ImageOps.grayscale(base)
+        contrast = ImageEnhance.Contrast(grayscale).enhance(1.45)
+        sharp = ImageEnhance.Sharpness(contrast).enhance(1.35)
+        alt = ImageOps.autocontrast(sharp)
+
+        # Strong variant for low-contrast phone photos.
+        boosted = ImageEnhance.Contrast(grayscale).enhance(1.8)
+        boosted = ImageEnhance.Sharpness(boosted).enhance(1.5)
+        boosted = ImageOps.autocontrast(boosted)
+
+        # Binary variant with aggressive thresholding for faded receipts.
+        boosted_arr = np.asarray(boosted, dtype=np.uint8)
+        p75 = int(np.percentile(boosted_arr, 75))
+        aggressive_binary = boosted.point(lambda p: 255 if p > p75 else 0)
+
+        return [primary, alt, boosted, aggressive_binary]
+
+    @staticmethod
+    def _score_candidate_text(text: str) -> float:
+        """Score OCR candidate text by receipt-likeness (items + totals + useful length)."""
+        if not text or not text.strip():
+            return 0.0
+
+        items = ReceiptParser.extract_items(text)
+        totals = ReceiptParser.extract_totals(text)
+
+        score = 0.0
+        item_count = len(items)
+
+        if item_count > 0:
+            score += min(item_count / 8.0, 1.0) * 0.55
+
+        if totals.get('subtotal', 0) > 0:
+            score += 0.15
+        if totals.get('total', 0) > 0:
+            score += 0.20
+
+        # Very short outputs are usually poor OCR captures.
+        if len(text.strip()) > 80:
+            score += 0.10
+
+        return min(score, 1.0)
+
+    @staticmethod
+    def _extract_with_config(image: Image.Image, config: str) -> str:
+        return pytesseract.image_to_string(
+            image,
+            lang='ind+eng',
+            config=config,
+        )
     
     @staticmethod
     def _correct_ocr_text(text: str) -> str:
@@ -546,35 +691,73 @@ class OCREngine:
         """
         try:
             logger.info("=== OCR EXTRACTION START ===")
-            status = get_tesseract_status()
+            status = get_ocr_runtime_status()
+            provider_mode = status.get("provider", "auto")
+            google_available = bool((status.get("google_vision") or {}).get("available"))
+            tesseract_available = bool((status.get("tesseract") or {}).get("available"))
+
             if not status.get("available"):
-                raise OCRError("Tesseract OCR not installed")
+                raise OCRError("No OCR provider available")
             
             with Image.open(io.BytesIO(image_bytes)) as source_image:
                 source_image.load()
                 image = source_image.copy()
 
             logger.info(f"Original image: {image.size} {image.format}")
+            quality = OCREngine._estimate_photo_quality(image)
+            logger.info(f"Photo quality: contrast={quality['contrast']:.1f}, sharpness={quality['sharpness']:.1f}")
             
-            # === PREPROCESSING STAGE ===
-            enhanced_image = OCREngine._preprocess_image(image)
-            logger.info(f"Enhanced image: {enhanced_image.size}")
-            
-            # === SINGLE-PASS OCR EXTRACTION ===
-            logger.info("OCR extraction (standard config)")
-            text = pytesseract.image_to_string(
-                enhanced_image,
-                lang='ind+eng',
-                config='--psm 6'
-            )
-            logger.info(f"OCR result: {len(text)} chars")
+            best_text = ""
+            best_score = -1.0
+
+            # 1) Cloud OCR candidate (high-accuracy path)
+            if provider_mode in ("auto", "google_vision") and google_available:
+                try:
+                    cloud_text = extract_text_google_vision(image_bytes)
+                    if cloud_text:
+                        corrected = OCREngine._correct_ocr_text(cloud_text)
+                        score = OCREngine._score_candidate_text(corrected)
+                        logger.info(f"OCR candidate source='google_vision' score={score:.3f} chars={len(corrected)}")
+                        if score > best_score:
+                            best_score = score
+                            best_text = corrected
+                except Exception as cloud_error:
+                    logger.warning(f"Google Vision OCR failed: {cloud_error}")
+                    if provider_mode == "google_vision" and not tesseract_available:
+                        raise OCRError(f"Google Vision OCR failed: {cloud_error}")
+
+            # 2) Local Tesseract candidates (fallback and/or parallel scorer)
+            run_tesseract = provider_mode in ("auto", "tesseract") and tesseract_available
+            if run_tesseract:
+                variants = OCREngine._build_ocr_variants(image)
+                logger.info(f"Prepared {len(variants)} OCR variants")
+
+                ocr_configs = [
+                    '--oem 1 --psm 6',
+                    '--oem 1 --psm 4',
+                    '--oem 1 --psm 11',
+                ]
+
+                for variant_idx, variant in enumerate(variants, start=1):
+                    logger.info(f"OCR variant {variant_idx}: size={variant.size}")
+                    for cfg in ocr_configs:
+                        raw_text = OCREngine._extract_with_config(variant, cfg)
+                        if not raw_text or not raw_text.strip():
+                            continue
+
+                        corrected = OCREngine._correct_ocr_text(raw_text)
+                        score = OCREngine._score_candidate_text(corrected)
+                        logger.info(f"OCR candidate source='tesseract' cfg='{cfg}' score={score:.3f} chars={len(corrected)}")
+
+                        if score > best_score:
+                            best_score = score
+                            best_text = corrected
+
+            text = best_text
+            logger.info(f"Selected best OCR candidate score={best_score:.3f}, chars={len(text)}")
 
             if not text or not text.strip():
                 raise OCRError("OCR returned empty text")
-            
-            # === POST-OCR CORRECTION ===
-            text = OCREngine._correct_ocr_text(text)
-            logger.info(f"Applied OCR corrections")
             
             logger.info(f"=== OCR EXTRACTION COMPLETE: {len(text)} chars ===")
             return text
