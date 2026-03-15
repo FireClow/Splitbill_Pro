@@ -16,7 +16,7 @@ export const useBillForm = (initialReceiptData?: ReceiptData) => {
   // Form state
   const [step, setStep] = useState(0);
   const [title, setTitle] = useState('');
-  const [currency, setCurrency] = useState(DEFAULT_CURRENCY);
+  const [currency, setCurrency] = useState<string>(DEFAULT_CURRENCY);
   const [items, setItems] = useState<ItemDraft[]>([{ name: '', price: '', quantity: '1' }]);
   const [participants, setParticipants] = useState<ParticipantDraft[]>([]);
   const [newParticipantName, setNewParticipantName] = useState('');
