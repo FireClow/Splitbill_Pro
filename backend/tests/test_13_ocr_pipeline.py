@@ -27,7 +27,15 @@ def _sample_jpeg_bytes(color=(255, 255, 255)):
 
 
 def test_ocr_engine_valid_image_pipeline(monkeypatch):
-    monkeypatch.setattr("receipt_processor.get_tesseract_status", lambda: {"available": True})
+    monkeypatch.setattr(
+        "receipt_processor.get_ocr_runtime_status",
+        lambda: {
+            "available": True,
+            "provider": "tesseract",
+            "google_vision": {"available": False},
+            "tesseract": {"available": True},
+        },
+    )
     monkeypatch.setattr(
         "receipt_processor.pytesseract.image_to_string",
         lambda *_args, **_kwargs: "Burger 5.50\nFries 2.50\nDrink 1.50",
@@ -39,14 +47,30 @@ def test_ocr_engine_valid_image_pipeline(monkeypatch):
 
 
 def test_ocr_engine_missing_tesseract_raises(monkeypatch):
-    monkeypatch.setattr("receipt_processor.get_tesseract_status", lambda: {"available": False})
+    monkeypatch.setattr(
+        "receipt_processor.get_ocr_runtime_status",
+        lambda: {
+            "available": False,
+            "provider": "tesseract",
+            "google_vision": {"available": False},
+            "tesseract": {"available": False},
+        },
+    )
 
-    with pytest.raises(OCRError, match="Tesseract OCR not installed"):
+    with pytest.raises(OCRError, match="No OCR provider available"):
         OCREngine.extract_text_from_image(_sample_png_bytes())
 
 
 def test_ocr_engine_empty_text_raises(monkeypatch):
-    monkeypatch.setattr("receipt_processor.get_tesseract_status", lambda: {"available": True})
+    monkeypatch.setattr(
+        "receipt_processor.get_ocr_runtime_status",
+        lambda: {
+            "available": True,
+            "provider": "tesseract",
+            "google_vision": {"available": False},
+            "tesseract": {"available": True},
+        },
+    )
     monkeypatch.setattr("receipt_processor.pytesseract.image_to_string", lambda *_args, **_kwargs: "   ")
 
     with pytest.raises(OCRError, match="empty text"):
@@ -54,7 +78,15 @@ def test_ocr_engine_empty_text_raises(monkeypatch):
 
 
 def test_ocr_engine_invalid_image_bytes_raises(monkeypatch):
-    monkeypatch.setattr("receipt_processor.get_tesseract_status", lambda: {"available": True})
+    monkeypatch.setattr(
+        "receipt_processor.get_ocr_runtime_status",
+        lambda: {
+            "available": True,
+            "provider": "tesseract",
+            "google_vision": {"available": False},
+            "tesseract": {"available": True},
+        },
+    )
 
     with pytest.raises(OCRError):
         OCREngine.extract_text_from_image(b"not-a-real-image")

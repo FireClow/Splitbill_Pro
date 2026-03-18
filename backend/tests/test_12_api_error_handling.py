@@ -122,6 +122,5 @@ def test_create_bill_floating_precision_per_item_split(api_client, auth_headers)
     assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
 
     data = response.json()
-    owner_id = next((p["participant_id"] for p in data["participants"] if p.get("is_owner")), None)
-    non_owner_splits = [float(s["amount_due"]) for s in data["splits"] if s["participant_id"] != owner_id]
-    assert sorted(non_owner_splits) == [0.1, 0.2], f"Unexpected floating split values: {non_owner_splits}"
+    split_amounts = [float(s["amount_due"]) for s in data["splits"]]
+    assert sorted(split_amounts) == [0.1, 0.2], f"Unexpected floating split values: {split_amounts}"

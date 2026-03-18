@@ -13,8 +13,9 @@ import hashlib
 import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime, timezone, timedelta
+import math
 from decimal import Decimal, ROUND_HALF_UP
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -531,6 +532,59 @@ def compute_bill_totals(bill: dict) -> dict:
         "total_amount": float(total.quantize(Decimal("0.01")))
     }
 
+
+def normalize_crop_points(points: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """Normalize arbitrary quadrilateral points to TL, TR, BR, BL order."""
+    if len(points) != 4:
+        raise ValueError("Crop polygon must contain exactly 4 points")
+
+    by_sum = sorted(points, key=lambda p: p[0] + p[1])
+    tl = by_sum[0]
+    br = by_sum[-1]
+    rem = [p for p in points if p not in (tl, br)]
+    rem_sorted = sorted(rem, key=lambda p: p[0] - p[1])
+    bl = rem_sorted[0]
+    tr = rem_sorted[-1]
+    return [tl, tr, br, bl]
+
+
+def calculate_polygon_area(points: List[Tuple[float, float]]) -> float:
+    if len(points) < 3:
+        return 0.0
+    acc = 0.0
+    for i in range(len(points)):
+        x1, y1 = points[i]
+        x2, y2 = points[(i + 1) % len(points)]
+        acc += x1 * y2 - x2 * y1
+    return abs(acc) * 0.5
+
+
+def is_self_intersecting_quadrilateral(points: List[Tuple[float, float]]) -> bool:
+    if len(points) != 4:
+        return True
+
+    def orient(p: Tuple[float, float], q: Tuple[float, float], r: Tuple[float, float]) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    def segments_intersect(a1: Tuple[float, float], a2: Tuple[float, float], b1: Tuple[float, float], b2: Tuple[float, float]) -> bool:
+        o1 = orient(a1, a2, b1)
+        o2 = orient(a1, a2, b2)
+        o3 = orient(b1, b2, a1)
+        o4 = orient(b1, b2, a2)
+        return (o1 * o2 < 0) and (o3 * o4 < 0)
+
+    # For ordered TL, TR, BR, BL, these are the non-adjacent edges.
+    return segments_intersect(points[0], points[1], points[2], points[3]) or segments_intersect(points[1], points[2], points[3], points[0])
+
+
+def validate_crop_quadrilateral(points: List[Tuple[float, float]], min_area: float = 25.0) -> None:
+    if len(points) != 4:
+        raise ValueError("Crop polygon must contain exactly 4 points")
+    if calculate_polygon_area(points) < min_area:
+        raise ValueError("Crop polygon area is too small")
+    if is_self_intersecting_quadrilateral(points):
+        raise ValueError("Crop polygon is invalid or self-intersecting")
+
 # ─── AUTH ENDPOINTS ────────────────────────────────────────────────
 
 @api_router.post("/auth/session")
@@ -682,22 +736,40 @@ async def get_features():
 async def create_bill(data: BillCreate, user: dict = Depends(get_current_user)):
     await check_bill_limit(user)
     bill_id = f"bill_{uuid.uuid4().hex[:12]}"
-    owner_part_id = f"part_{uuid.uuid4().hex[:12]}"
-    participants = [{"participant_id": owner_part_id, "name": user["name"], "contact_info": user.get("email", ""), "is_owner": True}]
+    participants: List[Dict[str, Any]] = []
     participant_id_map: Dict[str, str] = {}
     participant_name_map: Dict[str, str] = {}
+    seen_client_ids: set[str] = set()
+    seen_fallback_keys: set[str] = set()
 
     for p in data.participants:
+        client_id = (p.client_id or "").strip()
+        normalized_name = p.name.strip()
+        normalized_contact = (p.contact_info or "").strip()
+        fallback_key = f"{normalized_name.lower()}::{normalized_contact.lower()}"
+
+        if client_id:
+            if client_id in seen_client_ids:
+                continue
+            seen_client_ids.add(client_id)
+        else:
+            if fallback_key in seen_fallback_keys:
+                continue
+            seen_fallback_keys.add(fallback_key)
+
         participant_id = f"part_{uuid.uuid4().hex[:12]}"
         participants.append({
             "participant_id": participant_id,
-            "name": p.name,
-            "contact_info": p.contact_info or "",
+            "name": normalized_name,
+            "contact_info": normalized_contact,
             "is_owner": False,
         })
-        if p.client_id:
-            participant_id_map[p.client_id] = participant_id
-        participant_name_map[p.name.strip().lower()] = participant_id
+        if client_id:
+            participant_id_map[client_id] = participant_id
+        participant_name_map.setdefault(normalized_name.lower(), participant_id)
+
+    if not participants:
+        raise HTTPException(status_code=400, detail="At least one participant is required")
 
     items = []
     valid_participant_ids = {p["participant_id"] for p in participants}
@@ -1310,10 +1382,11 @@ async def scan_receipt(
 @api_router.post("/ocr/rescan-cropped")
 async def rescan_cropped_receipt(
     image_id: str = Form(...),
-    crop_x: int = Form(...),
-    crop_y: int = Form(...),
-    crop_width: int = Form(...),
-    crop_height: int = Form(...),
+    crop_x: Optional[int] = Form(None),
+    crop_y: Optional[int] = Form(None),
+    crop_width: Optional[int] = Form(None),
+    crop_height: Optional[int] = Form(None),
+    crop_points_json: Optional[str] = Form(None),
     user: dict = Depends(get_current_user)
 ):
     """Rescan a cropped portion of a previously scanned receipt."""
@@ -1334,7 +1407,76 @@ async def rescan_cropped_receipt(
         
         image_bytes = receipt["image_bytes"]
         img = Image.open(BytesIO(image_bytes))
-        cropped = img.crop((crop_x, crop_y, crop_x + crop_width, crop_y + crop_height))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+
+        if crop_points_json:
+            try:
+                parsed_points = json.loads(crop_points_json)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=400, detail="crop_points_json must be valid JSON") from exc
+
+            if not isinstance(parsed_points, list) or len(parsed_points) != 4:
+                raise HTTPException(status_code=400, detail="crop_points_json must contain exactly 4 points")
+
+            points: List[Tuple[float, float]] = []
+            for entry in parsed_points:
+                if not isinstance(entry, dict) or "x" not in entry or "y" not in entry:
+                    raise HTTPException(status_code=400, detail="Each crop point must have x and y")
+                try:
+                    x = float(entry["x"])
+                    y = float(entry["y"])
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(status_code=400, detail="Crop points must be numeric") from exc
+
+                x = max(0.0, min(x, float(max(0, img.width - 1))))
+                y = max(0.0, min(y, float(max(0, img.height - 1))))
+                points.append((x, y))
+
+            try:
+                points = normalize_crop_points(points)
+                validate_crop_quadrilateral(points)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            tl, tr, br, bl = points
+
+            top_width = math.hypot(tr[0] - tl[0], tr[1] - tl[1])
+            bottom_width = math.hypot(br[0] - bl[0], br[1] - bl[1])
+            left_height = math.hypot(bl[0] - tl[0], bl[1] - tl[1])
+            right_height = math.hypot(br[0] - tr[0], br[1] - tr[1])
+            out_width = max(1, int(round(max(top_width, bottom_width))))
+            out_height = max(1, int(round(max(left_height, right_height))))
+
+            # PIL QUAD source order: top-left, bottom-left, bottom-right, top-right.
+            quad = (tl[0], tl[1], bl[0], bl[1], br[0], br[1], tr[0], tr[1])
+            cropped = img.transform((out_width, out_height), Image.Transform.QUAD, quad, resample=Image.Resampling.BICUBIC)
+
+            min_x = min(p[0] for p in points)
+            min_y = min(p[1] for p in points)
+            max_x = max(p[0] for p in points)
+            max_y = max(p[1] for p in points)
+            crop_x = int(round(min_x))
+            crop_y = int(round(min_y))
+            crop_width = int(round(max_x - min_x))
+            crop_height = int(round(max_y - min_y))
+        else:
+            if crop_x is None or crop_y is None or crop_width is None or crop_height is None:
+                raise HTTPException(status_code=400, detail="Provide crop rectangle fields or crop_points_json")
+
+            safe_x = max(0, int(crop_x))
+            safe_y = max(0, int(crop_y))
+            safe_w = max(1, int(crop_width))
+            safe_h = max(1, int(crop_height))
+            max_w = max(1, img.width - safe_x)
+            max_h = max(1, img.height - safe_y)
+            safe_w = min(safe_w, max_w)
+            safe_h = min(safe_h, max_h)
+
+            crop_x = safe_x
+            crop_y = safe_y
+            crop_width = safe_w
+            crop_height = safe_h
+            cropped = img.crop((crop_x, crop_y, crop_x + crop_width, crop_y + crop_height))
         
         cropped_bytes = BytesIO()
         cropped.save(cropped_bytes, format="PNG")
@@ -1353,7 +1495,7 @@ async def rescan_cropped_receipt(
             "rescan_cropped",
             "ocr",
             image_id,
-            f"crop=({crop_x},{crop_y},{crop_width},{crop_height}) confidence={parsed['confidence']}"
+            f"crop=({crop_x},{crop_y},{crop_width},{crop_height}) points={bool(crop_points_json)} confidence={parsed['confidence']}"
         )
         
         return {
@@ -1484,7 +1626,7 @@ async def export_bill(bill_id: str, format: str, user: dict = Depends(require_pr
 
 @api_router.get("/health")
 async def health():
-    ocr_status = get_tesseract_status()
+    ocr_status = get_ocr_runtime_status()
     return {
         "status": "ok",
         "service": "SplitBill Pro API",
@@ -1509,6 +1651,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:8081",
         "http://127.0.0.1:8081",
+        "http://localhost:8082",
+        "http://127.0.0.1:8082",
         "http://localhost:19006",
         "http://127.0.0.1:19006",
     ],
