@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -12,13 +12,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   Image,
-  Dimensions,
   ActivityIndicator,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getOcrUrl } from '../utils/config';
+import { CropPoint, ReceiptCropper } from '../components/ReceiptCropper';
 
 interface ReceiptItem {
   id?: string;
@@ -42,14 +42,52 @@ interface ScannedReceipt {
   ocr_text?: string;
 }
 
-interface CropArea {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+const FALLBACK_IMAGE_DIMENSIONS = { width: 1200, height: 1800 };
 
-const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
+const normalizeCropPoints = (points: CropPoint[]): CropPoint[] => {
+  if (points.length !== 4) {
+    return points;
+  }
+
+  const center = points.reduce(
+    (acc, point) => ({ x: acc.x + point.x / points.length, y: acc.y + point.y / points.length }),
+    { x: 0, y: 0 }
+  );
+
+  const clockwise = [...points].sort((a, b) => {
+    const angleA = Math.atan2(a.y - center.y, a.x - center.x);
+    const angleB = Math.atan2(b.y - center.y, b.x - center.x);
+    return angleA - angleB;
+  });
+
+  let startIndex = 0;
+  let minScore = Number.POSITIVE_INFINITY;
+  clockwise.forEach((point, index) => {
+    const score = point.x + point.y;
+    if (score < minScore) {
+      minScore = score;
+      startIndex = index;
+    }
+  });
+
+  // Return ordered points: TL, TR, BR, BL.
+  return [
+    clockwise[startIndex],
+    clockwise[(startIndex + 1) % 4],
+    clockwise[(startIndex + 2) % 4],
+    clockwise[(startIndex + 3) % 4],
+  ];
+};
+
+const polygonArea = (points: CropPoint[]): number => {
+  if (points.length < 3) return 0;
+  let sum = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const next = points[(i + 1) % points.length];
+    sum += points[i].x * next.y - next.x * points[i].y;
+  }
+  return Math.abs(sum) * 0.5;
+};
 
 export default function ReviewReceiptScreen() {
   const router = useRouter();
@@ -71,17 +109,10 @@ export default function ReviewReceiptScreen() {
     image_uri: '',
   });
 
-  // Image zoom/crop state
-  const [zoomLevel, setZoomLevel] = useState(1);
   const [showCropMode, setShowCropMode] = useState(false);
-  const [cropArea] = useState<CropArea>({
-    x: 20,
-    y: 50,
-    width: screenWidth - 40,
-    height: Math.min(800, screenHeight - 300), // Much larger default crop area
-  });
   const [isRescanning, setIsRescanning] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
 
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editingItem, setEditingItem] = useState<ReceiptItem | null>(null);
@@ -102,8 +133,26 @@ export default function ReviewReceiptScreen() {
     };
   };
 
+  useEffect(() => {
+    if (!data.image_uri) {
+      setImageDimensions({ width: 0, height: 0 });
+      return;
+    }
+
+    // Show cropper immediately with safe defaults while metadata resolves.
+    setImageDimensions(FALLBACK_IMAGE_DIMENSIONS);
+
+    Image.getSize(
+      data.image_uri,
+      (width, height) => {
+        setImageDimensions({ width, height });
+      },
+      () => {}
+    );
+  }, [data.image_uri]);
+
   // Rescan with cropped area
-  const handleRescanCropped = async () => {
+  const handleRescanCropped = async (points: CropPoint[]) => {
     if (!data.image_uri) {
       Alert.alert('Error', 'No image available for rescan');
       return;
@@ -120,13 +169,30 @@ export default function ReviewReceiptScreen() {
         return;
       }
 
+      const normalizedPoints = normalizeCropPoints(points);
+      if (normalizedPoints.length !== 4 || polygonArea(normalizedPoints) < 25) {
+        Alert.alert('Invalid Crop', 'Please adjust corners to form a valid crop area.');
+        setIsRescanning(false);
+        return;
+      }
+
       // Send crop request to backend
       const formData = new FormData();
       formData.append('image_id', data.image_id);
-      formData.append('crop_x', String(Math.round(cropArea.x)));
-      formData.append('crop_y', String(Math.round(cropArea.y)));
-      formData.append('crop_width', String(Math.round(cropArea.width)));
-      formData.append('crop_height', String(Math.round(cropArea.height)));
+
+      const xs = normalizedPoints.map((point) => point.x);
+      const ys = normalizedPoints.map((point) => point.y);
+      const minX = Math.round(Math.min(...xs));
+      const maxX = Math.round(Math.max(...xs));
+      const minY = Math.round(Math.min(...ys));
+      const maxY = Math.round(Math.max(...ys));
+
+      formData.append('crop_points_json', JSON.stringify(normalizedPoints));
+      // Keep rectangular fallback fields for backward compatibility.
+      formData.append('crop_x', String(minX));
+      formData.append('crop_y', String(minY));
+      formData.append('crop_width', String(Math.max(1, maxX - minX)));
+      formData.append('crop_height', String(Math.max(1, maxY - minY)));
 
       const response = await fetch(getOcrUrl('rescan'), {
         method: 'POST',
@@ -331,99 +397,21 @@ export default function ReviewReceiptScreen() {
 
         {/* Crop Mode View */}
         {showCropMode && data.image_uri ? (
-          <View style={styles.cropModeContainer}>
-            <View style={styles.cropImageContainer}>
-              <Image
-                source={{ uri: data.image_uri }}
-                style={[
-                  styles.cropImage,
-                  {
-                    transform: [
-                      { scale: zoomLevel },
-                      { translateX: 0 },
-                      { translateY: 0 },
-                    ],
-                  },
-                ]}
-              />
-              
-              {/* Crop Rectangle */}
-              <View
-                style={[
-                  styles.cropRectangle,
-                  {
-                    left: cropArea.x,
-                    top: cropArea.y,
-                    width: cropArea.width,
-                    height: cropArea.height,
-                  },
-                ]}
-              >
-                {/* Crop handles */}
-                {(['tl', 'tr', 'bl', 'br'] as const).map((corner) => (
-                  <View
-                    key={corner}
-                    style={[
-                      styles.cropHandle,
-                      corner === 'tl' && styles.handleTL,
-                      corner === 'tr' && styles.handleTR,
-                      corner === 'bl' && styles.handleBL,
-                      corner === 'br' && styles.handleBR,
-                    ]}
-                  >
-                    <View style={styles.handleDot} />
-                  </View>
-                ))}
-              </View>
+          imageDimensions.width > 0 && imageDimensions.height > 0 ? (
+            <ReceiptCropper
+              imageUri={data.image_uri}
+              imageWidth={imageDimensions.width}
+              imageHeight={imageDimensions.height}
+              disabled={isRescanning}
+              onCancel={() => setShowCropMode(false)}
+              onConfirm={handleRescanCropped}
+            />
+          ) : (
+            <View style={styles.cropLoadingContainer}>
+              <ActivityIndicator size="large" color="#3B82F6" />
+              <Text style={styles.cropLoadingText}>Preparing crop editor...</Text>
             </View>
-
-            {/* Crop Controls */}
-            <View style={styles.cropControls}>
-              <TouchableOpacity
-                onPress={() => setZoomLevel(Math.max(1, zoomLevel - 0.2))}
-                style={styles.zoomButton}
-              >
-                <MaterialCommunityIcons name="minus" size={20} color="#3B82F6" />
-                <Text style={styles.zoomText}>Zoom Out</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => setZoomLevel(Math.min(3, zoomLevel + 0.2))}
-                style={styles.zoomButton}
-              >
-                <MaterialCommunityIcons name="plus" size={20} color="#3B82F6" />
-                <Text style={styles.zoomText}>Zoom In</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Crop Action Buttons */}
-            <View style={styles.cropActions}>
-              <TouchableOpacity
-                onPress={() => setShowCropMode(false)}
-                style={styles.cropCancelButton}
-              >
-                <Text style={styles.cropCancelText}>Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={handleRescanCropped}
-                disabled={isRescanning}
-                style={[
-                  styles.cropConfirmButton,
-                  isRescanning && styles.cropConfirmDisabled,
-                ]}
-              >
-                {isRescanning ? (
-                  <ActivityIndicator size="small" color="white" />
-                ) : (
-                  <>
-                    <MaterialCommunityIcons name="magnify" size={20} color="white" />
-                    <Text style={styles.cropConfirmText}>Rescan Area</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
+          )
         ) : (
           /* Normal Review Mode */
           <>
@@ -840,115 +828,16 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#0F172A',
   },
-  // Crop mode styles
-  cropModeContainer: {
+  cropLoadingContainer: {
     flex: 1,
-    backgroundColor: '#000',
-  },
-  cropImageContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  cropImage: {
-    width: screenWidth,
-    height: screenHeight * 0.5,
-  },
-  cropRectangle: {
-    position: 'absolute',
-    borderWidth: 2,
-    borderColor: '#3B82F6',
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-  },
-  cropHandle: {
-    position: 'absolute',
-    width: 20,
-    height: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  handleTL: {
-    top: -10,
-    left: -10,
-  },
-  handleTR: {
-    top: -10,
-    right: -10,
-  },
-  handleBL: {
-    bottom: -10,
-    left: -10,
-  },
-  handleBR: {
-    bottom: -10,
-    right: -10,
-  },
-  handleDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#3B82F6',
-    borderWidth: 2,
-    borderColor: 'white',
-  },
-  cropControls: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    backgroundColor: '#1F2937',
-  },
-  zoomButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#374151',
-    borderRadius: 8,
-  },
-  zoomText: {
-    color: '#3B82F6',
-    fontWeight: '600',
-    marginLeft: 6,
-  },
-  cropActions: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 12,
-  },
-  cropCancelButton: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: '#E2E8F0',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cropCancelText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0F172A',
-  },
-  cropConfirmButton: {
-    flex: 1,
-    flexDirection: 'row',
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: '#3B82F6',
+    backgroundColor: '#020617',
     justifyContent: 'center',
     alignItems: 'center',
     gap: 8,
   },
-  cropConfirmDisabled: {
-    backgroundColor: '#9CA3AF',
-    opacity: 0.6,
-  },
-  cropConfirmText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: 'white',
+  cropLoadingText: {
+    color: '#CBD5E1',
+    fontSize: 14,
   },
   // Image preview
   imagePreviewContainer: {

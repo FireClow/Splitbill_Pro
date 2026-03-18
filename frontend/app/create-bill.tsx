@@ -29,6 +29,12 @@ interface ParticipantDraft {
   contact_info: string;
 }
 
+const dedupeParticipantsByUserId = (participants: ParticipantDraft[]): ParticipantDraft[] => {
+  return participants.filter(
+    (participant, index, self) => index === self.findIndex((candidate) => candidate.id === participant.id)
+  );
+};
+
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'INR', 'SGD', 'KRW', 'MXN', 'BRL', 'THB', 'IDR', 'MYR'];
 
 const createId = (prefix: string): string => {
@@ -120,15 +126,15 @@ export default function CreateBillScreen() {
 
   const addParticipant = () => {
     if (!newParticipantName.trim()) return;
-    setParticipants([
-      ...participants,
+    setParticipants((prev) => ([
+      ...prev,
       { id: createId('participant'), name: newParticipantName.trim(), contact_info: '' },
-    ]);
+    ]));
     setNewParticipantName('');
   };
   const removeParticipant = (i: number) => {
     const participantId = participants[i]?.id;
-    setParticipants(participants.filter((_, idx) => idx !== i));
+    setParticipants((prev) => prev.filter((_, idx) => idx !== i));
 
     if (participantId) {
       setItems(prevItems =>
@@ -190,9 +196,6 @@ export default function CreateBillScreen() {
     updateDraftAssignment(itemId, participantId, parsed);
   }, [updateDraftAssignment]);
 
-  // Check if user's own name is in participants
-  const userNameAdded = user?.name && participants.some(p => p.name.toLowerCase() === user.name.toLowerCase());
-
   // Validate current step
   const validateStep = (currentStep: number): string | null => {
     if (currentStep === 0) { // Details
@@ -205,7 +208,7 @@ export default function CreateBillScreen() {
       return null;
     }
     if (currentStep === 2) { // People
-      if (participants.length === 0) return 'Please add at least one person (including yourself)';
+      if (participants.length === 0) return 'Please add at least one person';
       return null;
     }
     if (currentStep === 3) { // Assign
@@ -278,7 +281,13 @@ export default function CreateBillScreen() {
     if (!title.trim()) { Alert.alert('Error', 'Please enter a bill title'); return; }
     const validItems = items.filter(i => i.name.trim() && parseFloat(i.price) > 0);
     if (validItems.length === 0) { Alert.alert('Error', 'Please add at least one item'); return; }
-    if (participants.length === 0) { Alert.alert('Error', 'Please add at least one person (including yourself)'); return; }
+    const uniqueParticipants = dedupeParticipantsByUserId(participants);
+    if (uniqueParticipants.length === 0) { Alert.alert('Error', 'Please add at least one person'); return; }
+
+    if (uniqueParticipants.length !== participants.length) {
+      setParticipants(uniqueParticipants);
+    }
+
     for (const item of validItems) {
       const assigned = getAssignedTotal(item.assignments || {});
       const expected = getItemQuantity(item);
@@ -301,7 +310,7 @@ export default function CreateBillScreen() {
           assigned_quantities: i.assignments || {},
           assignments: mapAssignmentsToApiList(i.assignments || {}),
         })),
-        participants: participants.map(p => ({
+        participants: uniqueParticipants.map(p => ({
           name: p.name,
           contact_info: p.contact_info,
           client_id: p.id,
@@ -430,13 +439,7 @@ export default function CreateBillScreen() {
             <View style={styles.stepContent}>
               <Text style={styles.stepTitle}>Add People</Text>
               <View style={styles.subtitleRow}>
-                <Text style={styles.stepSubtitle}>Add yourself and other people sharing this bill</Text>
-                {userNameAdded && (
-                  <View style={styles.statusBadge}>
-                    <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
-                    <Text style={styles.statusText}>Your name added</Text>
-                  </View>
-                )}
+                <Text style={styles.stepSubtitle}>Add people sharing this bill</Text>
               </View>
               <View style={styles.addParticipantRow}>
                 <TextInput testID="participant-name-input" style={[styles.input, { flex: 1, marginBottom: 0 }]} placeholder="Person name" placeholderTextColor={Colors.muted} value={newParticipantName} onChangeText={setNewParticipantName} onSubmitEditing={addParticipant} />
