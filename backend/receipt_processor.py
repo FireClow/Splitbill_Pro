@@ -103,22 +103,102 @@ class ReceiptParser:
         items = []
         lines = text.split('\n')
 
+        excluded_keywords = [
+            'qris',
+            'bca',
+            'ovo',
+            'gopay',
+            'dana',
+            'cash',
+            'payment',
+            'paid',
+            'total',
+            'subtotal',
+            'grand total',
+            'change',
+            'kembalian',
+            'debit',
+            'credit',
+            'kredit',
+            'bayar',
+            'ppn',
+            'tax',
+            'pajak',
+            'service',
+            'charge',
+            'diskon',
+            'discount',
+            'promo',
+            'transaksi',
+            'transaction',
+            'order',
+            'tanggal',
+            'waktu',
+            'kasir',
+            'invoice',
+            'nota',
+            'nomor meja',
+            'pelanggan',
+            'karyawan',
+            'whatsapp',
+            'instagram',
+            'dine in',
+            'take away',
+        ]
+
+        stop_after_keywords = [
+            'total',
+            'subtotal',
+            'grand total',
+            'paid',
+            'payment',
+            'kembalian',
+            'change',
+            'debit',
+            'credit',
+            'cash',
+            'qris',
+        ]
+
+        metadata_pattern = re.compile(r'(transaks|transaction|tanggal|waktu|kasir|invoice|nota|nomor|no\b|meja|karyawan)', re.IGNORECASE)
+
+        date_patterns = [
+            re.compile(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b', re.IGNORECASE),
+            re.compile(r'\b\d{1,2}\s+[a-z]{3,}\s+\d{4}\b', re.IGNORECASE),
+        ]
+        time_patterns = [
+            re.compile(r'\b\d{1,2}:\d{2}(?::\d{2})?\b', re.IGNORECASE),
+        ]
+
+        def is_date_or_time_line(raw_line: str) -> bool:
+            normalized = normalize_for_keyword(raw_line)
+            if any(pattern.search(normalized) for pattern in date_patterns):
+                return True
+            if any(pattern.search(normalized) for pattern in time_patterns):
+                return True
+            return False
+
+        def normalize_for_keyword(raw_line: str) -> str:
+            lowered = raw_line.lower()
+            lowered = re.sub(r'[^a-z0-9\s]', ' ', lowered)
+            lowered = re.sub(r'\s+', ' ', lowered).strip()
+            return lowered
+
         def is_non_item_line(raw_line: str) -> bool:
-            line = raw_line.strip().lower()
-            if not line:
+            stripped = raw_line.strip()
+            if not stripped:
                 return True
 
-            ignored_keywords = [
-                'subtotal', 'sub total', 'total', 'grand total', 'total item',
-                'tax', 'pajak', 'ppn', 'service', 'svc', 'charge',
-                'qris', 'qr', 'debit', 'kredit', 'credit', 'cash', 'bayar',
-                'kembalian', 'change', 'diskon', 'discount', 'promo',
-                'terima kasih', 'thank you', 'whatsapp', 'instagram',
-                'alamat', 'address', 'invoice', 'nota', 'pelanggan', 'transaksi',
-                'nomor meja', 'karyawan', 'dine in', 'take away',
-            ]
+            line = stripped.lower()
+            normalized = normalize_for_keyword(stripped)
 
-            if any(keyword in line for keyword in ignored_keywords):
+            if any(keyword in normalized for keyword in excluded_keywords):
+                return True
+
+            if metadata_pattern.search(normalized):
+                return True
+
+            if is_date_or_time_line(raw_line):
                 return True
 
             # Lines with only separators, timestamps, or metadata should not be treated as items.
@@ -129,31 +209,50 @@ class ReceiptParser:
             if re.match(r'^(rp|idr)?\s*[\d.,]+\s*$', line):
                 return True
 
+            # Timestamp-like metadata line, e.g. "10 feb 2026, 00.11".
+            if re.search(r'\b\d{1,2}[:.]\d{2}\b', line) and re.search(r'\b\d{1,2}\s+[a-z]{3}\b', normalized):
+                return True
+
             return False
-        
-        # Skip keywords for header/footer/totals
-        skip_keywords = ['tanggal', 'waktu', 'kasir', 'thank', 'terima', 'no.', 'invoice', 'nota', 
-                   'alamat', 'address', 'phone', 'telp', 'pelanggan', 'nomor meja', 'transaksi',
-                   'diskon', 'discount', 'bayar', 'cash', 'card', 'kembalian', 'change', 
-                   'subtotal', 'sub total', 'pajak', 'tax', 'service', 'grand total', 
-                   'total', 'qris', 'qris bni', 'terima kasih', 'whatsapp', 'instagram', 'karyawan',
-                   'markop', 'raya belong', 'jakarta', 'dine in', 'hedan']
+
+        # Pre-filter known payment/metadata noise and optionally stop parsing after total section.
+        filtered_lines: List[str] = []
+        stop_parsing = False
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            normalized = normalize_for_keyword(line)
+
+            if stop_parsing:
+                continue
+
+            if any(keyword in normalized for keyword in excluded_keywords):
+                if any(keyword in normalized for keyword in stop_after_keywords) and re.search(r'\d', line):
+                    stop_parsing = True
+                continue
+
+            if is_date_or_time_line(line):
+                continue
+
+            filtered_lines.append(line)
         
         i = 0
-        while i < len(lines):
-            line = lines[i].strip()
+        while i < len(filtered_lines):
+            line = filtered_lines[i].strip()
             i += 1
             
             if not line or len(line) < 3:
                 continue
             
-            # Skip header/footer/total lines
-            if is_non_item_line(line) or any(skip in line.lower() for skip in skip_keywords):
+            # Skip header/footer/total/payment lines
+            if is_non_item_line(line):
                 continue
             
             name = None
             qty = 1
             price = 0.0
+            matched_from_multiline = False
             
             # PATTERN 1: Single-line with total price "Kampung 1/2 Mateng) 1 x Rp8.000 Rp8.000+"
             match = re.match(r'(.+?)\s+(\d+)\s*[xX×]\s*[Rr][Pp]\s*([\d.,]+)\s*[Rr][Pp]\s*([\d.,]+)\+?', line)
@@ -205,8 +304,8 @@ class ReceiptParser:
             
             # PATTERN 5: MULTI-LINE FORMAT - Current line is item name only
             # Next line has: "3 x Rp25.000" or "1 x Rp18.000" (with OCR error tolerance)
-            if not name and i < len(lines):
-                next_line = lines[i].strip()
+            if not name and i < len(filtered_lines):
+                next_line = filtered_lines[i].strip()
                 # Check if next line has quantity x price pattern (handles kp, rpi, rpo, etc.)
                 match = re.match(r'(\d+)\s*[xX×]\s*[RrKk][Pp]?[OoIi]?\s*([\d.,]+)\+?', next_line, re.IGNORECASE)
                 if match:
@@ -214,6 +313,7 @@ class ReceiptParser:
                     name = line
                     qty = int(match.group(1))
                     price = ReceiptParser.normalize_number(match.group(2))
+                    matched_from_multiline = True
                     i += 1  # Skip the next line since we already processed it
                     logger.debug(f"[MULTI-LINE] '{name}' + '{next_line}' -> qty={qty}, price={price}")
             
@@ -221,19 +321,39 @@ class ReceiptParser:
             if not name:
                 match = re.match(r'(.+?)\s+([\d.,]{4,})\+?$', line)
                 if match and (',' in match.group(2) or '.' in match.group(2) or len(match.group(2)) >= 4):
-                    name = match.group(1).strip()
-                    price = ReceiptParser.normalize_number(match.group(2))
+                    candidate_name = match.group(1).strip()
+                    numeric_part = match.group(2).strip()
+                    has_decimal_money = bool(re.match(r'^\d+[.,]\d{2}$', numeric_part))
+                    # Avoid metadata/reference code false positives, e.g. "RGNRO 100226".
+                    if len(candidate_name.split()) >= 2 or has_decimal_money:
+                        name = candidate_name
+                        price = ReceiptParser.normalize_number(numeric_part)
             
             # If we found a valid item (name and price > 0)
             if name and price > 0:
                 # Clean up name - remove 'Rp/kp/rpi/rpo' prefix, trailing parentheses, etc.
                 name = re.sub(r'^[RrKk][Pp]?[OoIi]?\s*', '', name, flags=re.IGNORECASE).strip()
                 name = re.sub(r'\)+$', '', name).strip()  # Remove trailing )
+                normalized_name = normalize_for_keyword(name)
+                alpha_chars = re.findall(r'[a-z]', normalized_name)
                 
                 # Filter out very short names or pure numbers
                 if len(name) < 2 or name.isdigit():
                     continue
+                if len(alpha_chars) < 2:
+                    continue
                 if is_non_item_line(name):
+                    continue
+                if metadata_pattern.search(normalized_name):
+                    continue
+
+                # Reject suspicious micro-prices from metadata timestamps.
+                if price < 1 and qty == 1 and re.search(r'\b\d{1,2}[:.]\d{2}\b', line):
+                    continue
+
+                # Item line should carry a price indicator unless parsed from explicit multi-line quantity row.
+                has_price_indicator = bool(re.search(r'(?i)rp\s?\d+|\d{1,3}(?:[.,]\d{3})+|\d+[.,]\d{2}', line))
+                if not matched_from_multiline and not has_price_indicator:
                     continue
                 
                 logger.debug(f"[MATCH] {name} | qty={qty} | price={price} | subtotal={price * qty}")

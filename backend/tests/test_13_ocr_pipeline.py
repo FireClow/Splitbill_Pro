@@ -141,3 +141,91 @@ def test_receipt_parser_indonesian_multi_line_quantity_format():
     assert parsed["items"][0]["price"] == 25000.0
     assert parsed["items"][1]["quantity"] == 2
     assert parsed["items"][1]["price"] == 25000.0
+
+
+def test_receipt_parser_filters_qris_payment_noise():
+    text = (
+        "Nasi Goreng\n"
+        "1 x Rp18.000\n"
+        "Es Teh Manis\n"
+        "1 x Rp6.000\n"
+        "QRIS BCA : Rp24.000\n"
+        "Total Paid : Rp24.000\n"
+    )
+    parsed = ReceiptParser.parse_receipt(text)
+    names = [item["name"].lower() for item in parsed["items"]]
+
+    assert any("nasi goreng" in name for name in names)
+    assert any("es teh manis" in name for name in names)
+    assert all("qris" not in name for name in names)
+    assert all("bca" not in name for name in names)
+    assert all("paid" not in name for name in names)
+
+
+def test_receipt_parser_filters_cash_change_lines():
+    text = (
+        "Mie Ayam\n"
+        "1 x Rp12.000\n"
+        "Air Mineral\n"
+        "1 x Rp4.000\n"
+        "Cash : Rp20.000\n"
+        "Kembalian : Rp4.000\n"
+    )
+    parsed = ReceiptParser.parse_receipt(text)
+    names = [item["name"].lower() for item in parsed["items"]]
+
+    assert any("mie ayam" in name for name in names)
+    assert any("air mineral" in name for name in names)
+    assert all("cash" not in name for name in names)
+    assert all("kembalian" not in name for name in names)
+
+
+def test_receipt_parser_stops_after_total_section():
+    text = (
+        "Burger\n"
+        "1 x Rp30.000\n"
+        "French Fries\n"
+        "1 x Rp15.000\n"
+        "Grand Total : Rp45.000\n"
+        "Debit BCA : Rp45.000\n"
+        "Ice Cream\n"
+        "1 x Rp10.000\n"
+    )
+    parsed = ReceiptParser.parse_receipt(text)
+    names = [item["name"].lower() for item in parsed["items"]]
+
+    assert any("burger" in name for name in names)
+    assert any("french fries" in name for name in names)
+    assert all("ice cream" not in name for name in names)
+
+
+def test_receipt_parser_excludes_date_and_time_lines():
+    text = (
+        "18/02/2026 10:30:45\n"
+        "Sate Ayam\n"
+        "1 x Rp22.000\n"
+        "18 Feb 2026\n"
+        "Es Jeruk\n"
+        "1 x Rp8.000\n"
+        "10:31\n"
+    )
+    parsed = ReceiptParser.parse_receipt(text)
+    names = [item["name"].lower() for item in parsed["items"]]
+
+    assert any("sate ayam" in name for name in names)
+    assert any("es jeruk" in name for name in names)
+    assert all("2026" not in name for name in names)
+
+
+def test_receipt_parser_excludes_transaction_metadata_lines():
+    text = (
+        "Transaction ID: TRX-8891\n"
+        "Order No: A-17\n"
+        "Nasi Campur\n"
+        "1 x Rp25.000\n"
+        "Invoice: INV-2026-001\n"
+    )
+    parsed = ReceiptParser.parse_receipt(text)
+    names = [item["name"].lower() for item in parsed["items"]]
+
+    assert names == ["nasi campur"]

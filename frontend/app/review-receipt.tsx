@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -113,6 +113,9 @@ export default function ReviewReceiptScreen() {
   const [isRescanning, setIsRescanning] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
+  const [cropSuggestion, setCropSuggestion] = useState<CropPoint[] | null>(null);
+  const [cropSuggestionVersion, setCropSuggestionVersion] = useState(0);
+  const cropSuggestionRequestRef = useRef(0);
 
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editingItem, setEditingItem] = useState<ReceiptItem | null>(null);
@@ -223,6 +226,59 @@ export default function ReviewReceiptScreen() {
       Alert.alert('Error', 'Rescan failed: ' + String(error));
     } finally {
       setIsRescanning(false);
+    }
+  };
+
+  const openCropMode = async () => {
+    setShowCropMode(true);
+    setCropSuggestion(null);
+    setCropSuggestionVersion((prev) => prev + 1);
+
+    if (!data.image_id) {
+      return;
+    }
+
+    try {
+      const sessionToken = await AsyncStorage.getItem('session_token');
+      if (!sessionToken) {
+        return;
+      }
+
+      const requestId = Date.now();
+      cropSuggestionRequestRef.current = requestId;
+
+      const formData = new FormData();
+      formData.append('image_id', data.image_id);
+
+      const response = await fetch(getOcrUrl('suggest'), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${sessionToken}`,
+        },
+        body: formData as any,
+      });
+
+      if (!response.ok || cropSuggestionRequestRef.current !== requestId) {
+        return;
+      }
+
+      const payload = (await response.json()) as any;
+      if (!Array.isArray(payload?.points) || payload.points.length !== 4) {
+        return;
+      }
+
+      const parsedPoints = payload.points
+        .map((point: any) => ({ x: Number(point?.x), y: Number(point?.y) }))
+        .filter((point: CropPoint) => Number.isFinite(point.x) && Number.isFinite(point.y));
+
+      if (parsedPoints.length !== 4) {
+        return;
+      }
+
+      setCropSuggestion(normalizeCropPoints(parsedPoints));
+      setCropSuggestionVersion((prev) => prev + 1);
+    } catch {
+      // Keep editor usable with default corners when suggestion endpoint is unavailable.
     }
   };
 
@@ -402,8 +458,13 @@ export default function ReviewReceiptScreen() {
               imageUri={data.image_uri}
               imageWidth={imageDimensions.width}
               imageHeight={imageDimensions.height}
+              initialPoints={cropSuggestion}
+              initialPointsVersion={cropSuggestionVersion}
               disabled={isRescanning}
-              onCancel={() => setShowCropMode(false)}
+              onCancel={() => {
+                cropSuggestionRequestRef.current = 0;
+                setShowCropMode(false);
+              }}
               onConfirm={handleRescanCropped}
             />
           ) : (
@@ -424,7 +485,7 @@ export default function ReviewReceiptScreen() {
                   resizeMode="contain"
                 />
                 <TouchableOpacity
-                  onPress={() => setShowCropMode(true)}
+                  onPress={openCropMode}
                   style={styles.cropImageButton}
                 >
                   <MaterialCommunityIcons name="crop" size={20} color="white" />

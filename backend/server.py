@@ -585,6 +585,122 @@ def validate_crop_quadrilateral(points: List[Tuple[float, float]], min_area: flo
     if is_self_intersecting_quadrilateral(points):
         raise ValueError("Crop polygon is invalid or self-intersecting")
 
+
+def default_crop_points(width: int, height: int) -> List[Tuple[float, float]]:
+    inset_x = max(12.0, width * 0.08)
+    inset_y = max(12.0, height * 0.08)
+    return [
+        (inset_x, inset_y),
+        (width - inset_x, inset_y),
+        (width - inset_x, height - inset_y),
+        (inset_x, height - inset_y),
+    ]
+
+
+def suggest_receipt_crop_points(image_bytes: bytes) -> Tuple[List[Tuple[float, float]], str]:
+    """Detect a stable initial crop quadrilateral. Returns points in TL, TR, BR, BL order."""
+    from io import BytesIO
+    from PIL import Image, ImageOps
+
+    try:
+        import numpy as np
+    except Exception:
+        img = Image.open(BytesIO(image_bytes))
+        return default_crop_points(img.width, img.height), "fallback-no-numpy"
+
+    with Image.open(BytesIO(image_bytes)) as src:
+        src.load()
+        img = src.convert("RGB")
+
+    orig_w, orig_h = img.size
+    if orig_w <= 0 or orig_h <= 0:
+        return default_crop_points(max(orig_w, 1), max(orig_h, 1)), "fallback-invalid-size"
+
+    max_side = max(orig_w, orig_h)
+    scale = 1.0
+    if max_side > 1200:
+        scale = 1200.0 / float(max_side)
+        resized = img.resize((max(1, int(round(orig_w * scale))), max(1, int(round(orig_h * scale)))), Image.Resampling.BILINEAR)
+    else:
+        resized = img
+
+    gray = ImageOps.autocontrast(resized.convert("L"))
+    arr = np.asarray(gray, dtype=np.float32)
+    h, w = arr.shape
+
+    if h < 20 or w < 20:
+        points = default_crop_points(w, h)
+    else:
+        p5, p95 = np.percentile(arr, [5, 95])
+        spread = max(1.0, float(p95 - p5))
+        norm = np.clip((arr - p5) / spread, 0.0, 1.0)
+
+        gx = np.abs(np.diff(norm, axis=1, prepend=norm[:, :1]))
+        gy = np.abs(np.diff(norm, axis=0, prepend=norm[:1, :]))
+        edge = 0.5 * (gx + gy)
+
+        threshold = float(np.percentile(edge, 88))
+        mask = edge >= threshold
+
+        border = max(4, int(min(h, w) * 0.02))
+        mask[:border, :] = False
+        mask[h - border :, :] = False
+        mask[:, :border] = False
+        mask[:, w - border :] = False
+
+        ys, xs = np.where(mask)
+        if len(xs) < 120:
+            points = default_crop_points(w, h)
+        else:
+            left = float(np.percentile(xs, 4))
+            right = float(np.percentile(xs, 96))
+            top = float(np.percentile(ys, 4))
+            bottom = float(np.percentile(ys, 96))
+
+            pad_x = max(4.0, (right - left) * 0.03)
+            pad_y = max(4.0, (bottom - top) * 0.03)
+            min_margin_x = max(6.0, w * 0.015)
+            min_margin_y = max(6.0, h * 0.015)
+
+            left = max(min_margin_x, left - pad_x)
+            right = min(w - min_margin_x, right + pad_x)
+            top = max(min_margin_y, top - pad_y)
+            bottom = min(h - min_margin_y, bottom + pad_y)
+
+            min_width = w * 0.35
+            min_height = h * 0.35
+            if (right - left) < min_width:
+                cx = (left + right) * 0.5
+                half = min_width * 0.5
+                left = max(min_margin_x, cx - half)
+                right = min(w - min_margin_x, cx + half)
+            if (bottom - top) < min_height:
+                cy = (top + bottom) * 0.5
+                half = min_height * 0.5
+                top = max(min_margin_y, cy - half)
+                bottom = min(h - min_margin_y, cy + half)
+
+            points = [(left, top), (right, top), (right, bottom), (left, bottom)]
+
+    if scale != 1.0:
+        points = [(x / scale, y / scale) for x, y in points]
+
+    clamped = [
+        (
+            max(0.0, min(float(orig_w - 1), float(x))),
+            max(0.0, min(float(orig_h - 1), float(y))),
+        )
+        for x, y in points
+    ]
+
+    try:
+        normalized = normalize_crop_points(clamped)
+        validate_crop_quadrilateral(normalized, min_area=100.0)
+        return normalized, "auto-edge"
+    except ValueError:
+        fallback = default_crop_points(orig_w, orig_h)
+        return normalize_crop_points(fallback), "fallback-geometry"
+
 # ─── AUTH ENDPOINTS ────────────────────────────────────────────────
 
 @api_router.post("/auth/session")
@@ -1522,6 +1638,45 @@ async def rescan_cropped_receipt(
     except Exception as e:
         logger.error(f"[OCR] Rescan error: {e}")
         raise HTTPException(status_code=500, detail="Failed to rescan receipt area")
+
+
+@api_router.post("/ocr/suggest-crop")
+async def suggest_crop_area(
+    image_id: str = Form(...),
+    user: dict = Depends(get_current_user),
+):
+    """Return an initial crop quadrilateral suggestion for manual adjustment."""
+    receipt = await db.receipt_images.find_one({"image_id": image_id})
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt image not found")
+
+    if receipt.get("user_id") != user.get("user_id"):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    image_bytes = receipt.get("image_bytes")
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Receipt image has no data")
+
+    try:
+        points, source = suggest_receipt_crop_points(image_bytes)
+    except Exception as exc:
+        logger.warning(f"[OCR] suggest-crop fallback for {image_id}: {exc}")
+        from io import BytesIO
+        from PIL import Image
+
+        with Image.open(BytesIO(image_bytes)) as src:
+            points = default_crop_points(src.width, src.height)
+            source = "fallback-error"
+
+    return {
+        "success": True,
+        "image_id": image_id,
+        "points": [
+            {"x": round(point[0], 2), "y": round(point[1], 2)}
+            for point in points
+        ],
+        "source": source,
+    }
 
 
 @api_router.post("/ocr/confirm-receipt")

@@ -37,6 +37,8 @@ interface ReceiptCropperProps {
   imageUri: string;
   imageWidth: number;
   imageHeight: number;
+  initialPoints?: CropPoint[] | null;
+  initialPointsVersion?: number;
   disabled?: boolean;
   onCancel: () => void;
   onConfirm: (points: CropPoint[]) => void;
@@ -44,6 +46,7 @@ interface ReceiptCropperProps {
 
 const HANDLE_RADIUS = 12;
 const MIN_EDGE = 26;
+const MIN_AREA = 600;
 const FRAME_PADDING = 12;
 
 const clamp = (value: number, min: number, max: number): number => {
@@ -60,6 +63,114 @@ const buildDefaultCorners = (frame: ImageFrame): CropCorners => {
     bl: { x: frame.x + insetX, y: frame.y + frame.height - insetY },
     br: { x: frame.x + frame.width - insetX, y: frame.y + frame.height - insetY },
   };
+};
+
+const toOrderedPoints = (corners: CropCorners): CropPoint[] => {
+  return [corners.tl, corners.tr, corners.br, corners.bl];
+};
+
+const polygonArea = (points: CropPoint[]): number => {
+  if (points.length < 3) {
+    return 0;
+  }
+
+  let area = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const next = points[(i + 1) % points.length];
+    area += points[i].x * next.y - next.x * points[i].y;
+  }
+  return Math.abs(area) * 0.5;
+};
+
+const segmentsIntersect = (a1: CropPoint, a2: CropPoint, b1: CropPoint, b2: CropPoint): boolean => {
+  const orient = (p: CropPoint, q: CropPoint, r: CropPoint) => {
+    return (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  };
+
+  const o1 = orient(a1, a2, b1);
+  const o2 = orient(a1, a2, b2);
+  const o3 = orient(b1, b2, a1);
+  const o4 = orient(b1, b2, a2);
+  return o1 * o2 < 0 && o3 * o4 < 0;
+};
+
+const isSelfIntersecting = (points: CropPoint[]): boolean => {
+  if (points.length !== 4) {
+    return true;
+  }
+  return segmentsIntersect(points[0], points[1], points[2], points[3]) || segmentsIntersect(points[1], points[2], points[3], points[0]);
+};
+
+const isValidCorners = (corners: CropCorners): boolean => {
+  const points = toOrderedPoints(corners);
+  const edgeLengths = [
+    Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y),
+    Math.hypot(points[2].x - points[1].x, points[2].y - points[1].y),
+    Math.hypot(points[3].x - points[2].x, points[3].y - points[2].y),
+    Math.hypot(points[0].x - points[3].x, points[0].y - points[3].y),
+  ];
+
+  if (edgeLengths.some((len) => len < MIN_EDGE)) {
+    return false;
+  }
+
+  if (polygonArea(points) < MIN_AREA) {
+    return false;
+  }
+
+  if (isSelfIntersecting(points)) {
+    return false;
+  }
+
+  return true;
+};
+
+const mapPointBetweenFrames = (point: CropPoint, from: ImageFrame, to: ImageFrame): CropPoint => {
+  const nx = clamp((point.x - from.x) / from.width, 0, 1);
+  const ny = clamp((point.y - from.y) / from.height, 0, 1);
+  return {
+    x: to.x + nx * to.width,
+    y: to.y + ny * to.height,
+  };
+};
+
+const mapCornersBetweenFrames = (corners: CropCorners, from: ImageFrame, to: ImageFrame): CropCorners => {
+  return {
+    tl: mapPointBetweenFrames(corners.tl, from, to),
+    tr: mapPointBetweenFrames(corners.tr, from, to),
+    br: mapPointBetweenFrames(corners.br, from, to),
+    bl: mapPointBetweenFrames(corners.bl, from, to),
+  };
+};
+
+const cornersFromImagePoints = (
+  points: CropPoint[] | null | undefined,
+  frame: ImageFrame,
+  imageWidth: number,
+  imageHeight: number
+): CropCorners | null => {
+  if (!points || points.length !== 4 || imageWidth <= 0 || imageHeight <= 0) {
+    return null;
+  }
+
+  const [tl, tr, br, bl] = points;
+  const toUiPoint = (point: CropPoint): CropPoint => ({
+    x: frame.x + clamp(point.x / imageWidth, 0, 1) * frame.width,
+    y: frame.y + clamp(point.y / imageHeight, 0, 1) * frame.height,
+  });
+
+  const converted: CropCorners = {
+    tl: toUiPoint(tl),
+    tr: toUiPoint(tr),
+    br: toUiPoint(br),
+    bl: toUiPoint(bl),
+  };
+
+  if (!isValidCorners(converted)) {
+    return null;
+  }
+
+  return converted;
 };
 
 const convertToImagePoints = (corners: CropCorners, frame: ImageFrame, imageWidth: number, imageHeight: number): CropPoint[] => {
@@ -80,6 +191,8 @@ export function ReceiptCropper({
   imageUri,
   imageWidth,
   imageHeight,
+  initialPoints,
+  initialPointsVersion = 0,
   disabled = false,
   onCancel,
   onConfirm,
@@ -89,8 +202,11 @@ export function ReceiptCropper({
   const [containerHeight, setContainerHeight] = useState(Math.max(320, initialViewport.height - 220));
   const [corners, setCorners] = useState<CropCorners | null>(null);
   const [activeCorner, setActiveCorner] = useState<CornerKey | null>(null);
+  const [isManualMode, setIsManualMode] = useState(false);
 
   const cornersRef = useRef<CropCorners | null>(null);
+  const frameRef = useRef<ImageFrame | null>(null);
+  const userInteractedRef = useRef(false);
   const dragStartRef = useRef<CropPoint>({ x: 0, y: 0 });
   const cornerStartRef = useRef<CropPoint>({ x: 0, y: 0 });
 
@@ -124,46 +240,59 @@ export function ReceiptCropper({
   }, [containerWidth, containerHeight, imageWidth, imageHeight]);
 
   useEffect(() => {
-    if (!frame) return;
-    const next = buildDefaultCorners(frame);
-    setCorners(next);
+    if (!frame) {
+      return;
+    }
+
+    const prevFrame = frameRef.current;
+    frameRef.current = frame;
+
+    if (!prevFrame || !cornersRef.current) {
+      const seeded = cornersFromImagePoints(initialPoints, frame, imageWidth, imageHeight);
+      const next = seeded ?? buildDefaultCorners(frame);
+      setCorners(next);
+      cornersRef.current = next;
+      return;
+    }
+
+    const remapped = mapCornersBetweenFrames(cornersRef.current, prevFrame, frame);
+    if (isValidCorners(remapped)) {
+      cornersRef.current = remapped;
+      setCorners(remapped);
+      return;
+    }
+
+    const fallback = buildDefaultCorners(frame);
+    cornersRef.current = fallback;
+    setCorners(fallback);
+  }, [frame, imageWidth, imageHeight, initialPoints]);
+
+  useEffect(() => {
+    if (!frame || userInteractedRef.current) {
+      return;
+    }
+
+    const seeded = cornersFromImagePoints(initialPoints, frame, imageWidth, imageHeight);
+    const next = seeded ?? buildDefaultCorners(frame);
     cornersRef.current = next;
-  }, [frame]);
+    setCorners(next);
+    setIsManualMode(false);
+  }, [initialPointsVersion, initialPoints, frame, imageWidth, imageHeight]);
 
   const updateCorner = (corner: CornerKey, nextX: number, nextY: number) => {
     if (!frame || !cornersRef.current) return;
 
-    const current = cornersRef.current;
-
-    const minX = frame.x;
-    const maxX = frame.x + frame.width;
-    const minY = frame.y;
-    const maxY = frame.y + frame.height;
-
-    let x = clamp(nextX, minX, maxX);
-    let y = clamp(nextY, minY, maxY);
-
-    if (corner === 'tl') {
-      x = Math.min(x, current.tr.x - MIN_EDGE, current.bl.x - MIN_EDGE);
-      y = Math.min(y, current.bl.y - MIN_EDGE, current.tr.y - MIN_EDGE);
-    } else if (corner === 'tr') {
-      x = Math.max(x, current.tl.x + MIN_EDGE, current.br.x + MIN_EDGE);
-      y = Math.min(y, current.br.y - MIN_EDGE, current.tl.y - MIN_EDGE);
-    } else if (corner === 'bl') {
-      x = Math.min(x, current.br.x - MIN_EDGE, current.tl.x - MIN_EDGE);
-      y = Math.max(y, current.tl.y + MIN_EDGE, current.br.y + MIN_EDGE);
-    } else {
-      x = Math.max(x, current.bl.x + MIN_EDGE, current.tr.x + MIN_EDGE);
-      y = Math.max(y, current.tr.y + MIN_EDGE, current.bl.y + MIN_EDGE);
-    }
-
-    x = clamp(x, minX, maxX);
-    y = clamp(y, minY, maxY);
+    const x = clamp(nextX, frame.x, frame.x + frame.width);
+    const y = clamp(nextY, frame.y, frame.y + frame.height);
 
     const updated: CropCorners = {
-      ...current,
+      ...cornersRef.current,
       [corner]: { x, y },
     };
+
+    if (!isValidCorners(updated)) {
+      return;
+    }
 
     cornersRef.current = updated;
     setCorners(updated);
@@ -175,6 +304,8 @@ export function ReceiptCropper({
       onMoveShouldSetPanResponder: () => !disabled,
       onPanResponderGrant: (evt) => {
         if (!cornersRef.current) return;
+        userInteractedRef.current = true;
+        setIsManualMode(true);
         setActiveCorner(corner);
         dragStartRef.current = { x: evt.nativeEvent.pageX, y: evt.nativeEvent.pageY };
         cornerStartRef.current = { ...cornersRef.current[corner] };
@@ -302,7 +433,11 @@ export function ReceiptCropper({
 
       <View style={styles.tipBox}>
         <MaterialCommunityIcons name="gesture-tap-hold" size={18} color="#BFDBFE" />
-        <Text style={styles.tipText}>Drag each corner to tightly fit the receipt edges.</Text>
+        <Text style={styles.tipText}>
+          {isManualMode
+            ? 'Manual mode active. Auto suggestion is locked and will not override your corners.'
+            : 'Auto suggestion is loaded once. Drag any corner to switch to manual mode.'}
+        </Text>
       </View>
 
       <View style={styles.actions}>
@@ -313,7 +448,10 @@ export function ReceiptCropper({
         <TouchableOpacity
           style={styles.resetButton}
           onPress={() => {
-            const next = buildDefaultCorners(frame);
+            userInteractedRef.current = false;
+            setIsManualMode(false);
+            const seeded = cornersFromImagePoints(initialPoints, frame, imageWidth, imageHeight);
+            const next = seeded ?? buildDefaultCorners(frame);
             cornersRef.current = next;
             setCorners(next);
           }}

@@ -51,6 +51,7 @@ export const API_CONFIG = {
       scanReceipt: '/api/ocr/scan-receipt',
       rescanCropped: '/api/ocr/rescan-cropped',
       confirmReceipt: '/api/ocr/confirm-receipt',
+      suggestCrop: '/api/ocr/suggest-crop',
     },
     dashboard: '/api/dashboard/stats',
   },
@@ -76,14 +77,15 @@ export const getApiUrl = (endpoint: string): string => {
 
 /**
  * Helper to get OCR endpoint
- * @param type - 'scan', 'rescan', or 'confirm'
+ * @param type - 'scan', 'rescan', 'confirm', or 'suggest'
  * @returns Full URL
  */
-export const getOcrUrl = (type: 'scan' | 'rescan' | 'confirm'): string => {
+export const getOcrUrl = (type: 'scan' | 'rescan' | 'confirm' | 'suggest'): string => {
   const endpoints = {
     scan: API_CONFIG.endpoints.ocr.scanReceipt,
     rescan: API_CONFIG.endpoints.ocr.rescanCropped,
     confirm: API_CONFIG.endpoints.ocr.confirmReceipt,
+    suggest: API_CONFIG.endpoints.ocr.suggestCrop,
   };
   return getApiUrl(endpoints[type]);
 };

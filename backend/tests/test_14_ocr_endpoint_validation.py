@@ -178,3 +178,34 @@ def test_rescan_cropped_rejects_point_without_coordinates(auth_headers):
     )
     assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text}"
     assert "must have x and y" in response.text
+
+
+def test_suggest_crop_returns_four_points(auth_headers):
+    image_id = _seed_receipt_image_for_user(auth_headers)
+    response = requests.post(
+        f"{BASE_URL}/api/ocr/suggest-crop",
+        headers={"Authorization": auth_headers["Authorization"]},
+        data={"image_id": image_id},
+        timeout=20,
+    )
+
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+    payload = response.json()
+    points = payload.get("points", [])
+    assert len(points) == 4, f"Expected 4 points, got {len(points)}"
+    for point in points:
+        assert isinstance(point.get("x"), (int, float))
+        assert isinstance(point.get("y"), (int, float))
+        assert point["x"] >= 0
+        assert point["y"] >= 0
+
+
+def test_suggest_crop_unknown_image_returns_404(auth_headers):
+    response = requests.post(
+        f"{BASE_URL}/api/ocr/suggest-crop",
+        headers={"Authorization": auth_headers["Authorization"]},
+        data={"image_id": "missing-image-id"},
+        timeout=20,
+    )
+
+    assert response.status_code == 404, f"Expected 404, got {response.status_code}: {response.text}"
