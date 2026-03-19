@@ -19,6 +19,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getOcrUrl } from '../utils/config';
 import { CropPoint, ReceiptCropper } from '../components/ReceiptCropper';
+import { Colors } from '../utils/colors';
 
 interface ReceiptItem {
   id?: string;
@@ -39,6 +40,10 @@ interface ScannedReceipt {
   service_charge: number;
   total: number;
   confidence: number;
+  quality_metrics?: {
+    parsing_error?: boolean;
+    tax_ambiguous?: boolean;
+  };
   ocr_text?: string;
 }
 
@@ -145,6 +150,9 @@ export default function ReviewReceiptScreen() {
     };
   };
 
+  const hasParsingWarning = Boolean(data.quality_metrics?.parsing_error);
+  const hasTaxAmbiguousWarning = Boolean(data.quality_metrics?.tax_ambiguous);
+
   useEffect(() => {
     if (!data.image_uri) {
       setImageDimensions({ width: 0, height: 0 });
@@ -224,6 +232,7 @@ export default function ReviewReceiptScreen() {
           service_charge: result.service_charge || 0,
           total: result.total || 0,
           confidence: result.confidence || 0,
+          quality_metrics: result.quality_metrics || {},
           ocr_text: result.ocr_text || '',
         });
         setShowCropMode(false);
@@ -307,6 +316,13 @@ export default function ReviewReceiptScreen() {
       return;
     }
 
+    const normalizedSubtotal = Number.parseFloat(
+      normalizedItems.reduce((sum, item) => sum + item.price * item.quantity, 0).toFixed(2)
+    );
+    const normalizedTax = Number.parseFloat((Number(data.tax) || 0).toFixed(2));
+    const normalizedServiceCharge = Number.parseFloat((Number(data.service_charge) || 0).toFixed(2));
+    const normalizedTotal = Number.parseFloat((normalizedSubtotal + normalizedTax + normalizedServiceCharge).toFixed(2));
+
     try {
       setIsSaving(true);
 
@@ -315,10 +331,10 @@ export default function ReviewReceiptScreen() {
         image_id: data.image_id,
         currency: data.currency,
         items: normalizedItems,
-        subtotal: data.subtotal,
-        tax: data.tax,
-        service_charge: data.service_charge,
-        total: data.total,
+        subtotal: normalizedSubtotal,
+        tax: normalizedTax,
+        service_charge: normalizedServiceCharge,
+        total: normalizedTotal,
         confidence: data.confidence,
       };
 
@@ -347,9 +363,14 @@ export default function ReviewReceiptScreen() {
         router.push({
           pathname: '/create-bill',
           params: {
+            initialStep: '2',
             receiptData: JSON.stringify({
               ...data,
               items: normalizedItems,
+              subtotal: normalizedSubtotal,
+              tax: normalizedTax,
+              service_charge: normalizedServiceCharge,
+              total: normalizedTotal,
               bill_title: billTitle,
               bill_id: result.bill_id || '',
             }),
@@ -480,7 +501,7 @@ export default function ReviewReceiptScreen() {
         {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.push('/scan-receipt')}>
-            <MaterialCommunityIcons name="arrow-left" size={24} color="#0F172A" />
+            <MaterialCommunityIcons name="arrow-left" size={24} color={Colors.text} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Review Receipt</Text>
           <View style={{ width: 24 }} />
@@ -504,7 +525,7 @@ export default function ReviewReceiptScreen() {
             />
           ) : (
             <View style={styles.cropLoadingContainer}>
-              <ActivityIndicator size="large" color="#3B82F6" />
+              <ActivityIndicator size="large" color={Colors.primary} />
               <Text style={styles.cropLoadingText}>Preparing crop editor...</Text>
             </View>
           )
@@ -523,7 +544,7 @@ export default function ReviewReceiptScreen() {
                   onPress={openCropMode}
                   style={styles.cropImageButton}
                 >
-                  <MaterialCommunityIcons name="crop" size={20} color="white" />
+                  <MaterialCommunityIcons name="crop" size={20} color={Colors.primaryForeground} />
                   <Text style={styles.cropImageButtonText}>Crop & Rescan</Text>
                 </TouchableOpacity>
               </View>
@@ -536,7 +557,7 @@ export default function ReviewReceiptScreen() {
                   <MaterialCommunityIcons
                     name={data.confidence > 0.8 ? 'check-circle' : 'alert-circle'}
                     size={20}
-                    color={data.confidence > 0.8 ? '#10B981' : '#F59E0B'}
+                    color={data.confidence > 0.8 ? Colors.success : Colors.warning}
                   />
                   <Text style={styles.confidenceText}>
                     OCR Confidence: {(data.confidence * 100).toFixed(0)}%
@@ -545,9 +566,27 @@ export default function ReviewReceiptScreen() {
 
                 {data.confidence < 0.8 && (
                   <View style={styles.lowConfidenceWarning}>
-                    <MaterialCommunityIcons name="alert" size={16} color="#DC2626" />
+                    <MaterialCommunityIcons name="alert" size={16} color={Colors.error} />
                     <Text style={styles.warningText}>
                       Low confidence - please review and edit items
+                    </Text>
+                  </View>
+                )}
+
+                {hasParsingWarning && (
+                  <View style={styles.lowConfidenceWarning}>
+                    <MaterialCommunityIcons name="alert-octagon" size={16} color={Colors.error} />
+                    <Text style={styles.warningText}>
+                      OCR totals may be inconsistent. Please verify subtotal, tax, and total.
+                    </Text>
+                  </View>
+                )}
+
+                {hasTaxAmbiguousWarning && (
+                  <View style={styles.lowConfidenceWarning}>
+                    <MaterialCommunityIcons name="alert-decagram" size={16} color={Colors.warning} />
+                    <Text style={styles.warningText}>
+                      Tax value looks ambiguous for IDR receipt. Please confirm tax manually.
                     </Text>
                   </View>
                 )}
@@ -557,7 +596,7 @@ export default function ReviewReceiptScreen() {
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Currency</Text>
                 <View style={styles.currencySelector}>
-                  <MaterialCommunityIcons name="currency-usd" size={20} color="#3B82F6" />
+                  <MaterialCommunityIcons name="currency-usd" size={20} color={Colors.primary} />
                   <Text style={styles.currencyText}>{data.currency}</Text>
                 </View>
               </View>
@@ -570,7 +609,7 @@ export default function ReviewReceiptScreen() {
                     onPress={() => setShowAddItem(true)}
                     style={styles.addButton}
                   >
-                    <MaterialCommunityIcons name="plus" size={20} color="#3B82F6" />
+                    <MaterialCommunityIcons name="plus" size={20} color={Colors.primary} />
                   </TouchableOpacity>
                 </View>
 
@@ -579,7 +618,7 @@ export default function ReviewReceiptScreen() {
                     <MaterialCommunityIcons
                       name="inbox-multiple-outline"
                       size={40}
-                      color="#CBD5E1"
+                      color={Colors.muted}
                     />
                     <Text style={styles.emptyText}>No items added yet</Text>
                     <Text style={styles.emptySubtext}>
@@ -596,7 +635,7 @@ export default function ReviewReceiptScreen() {
                             <MaterialCommunityIcons
                               name="alert"
                               size={12}
-                              color="#DC2626"
+                              color={Colors.error}
                             />
                             <Text style={styles.lowConfidenceTagText}>
                               Low confidence
@@ -638,7 +677,7 @@ export default function ReviewReceiptScreen() {
                           onPress={() => handleDeleteItem(item.id)}
                           style={styles.deleteButton}
                         >
-                          <MaterialCommunityIcons name="delete" size={20} color="#EF4444" />
+                          <MaterialCommunityIcons name="delete" size={20} color={Colors.error} />
                         </TouchableOpacity>
                       </View>
                     ))}
@@ -708,7 +747,7 @@ export default function ReviewReceiptScreen() {
                 onPress={() => router.push('/scan-receipt')}
                 style={styles.secondaryButton}
               >
-                <MaterialCommunityIcons name="close" size={20} color="#3B82F6" />
+                <MaterialCommunityIcons name="close" size={20} color={Colors.text} />
                 <Text style={styles.secondaryButtonText}>Cancel</Text>
               </TouchableOpacity>
               
@@ -718,10 +757,10 @@ export default function ReviewReceiptScreen() {
                 style={[styles.primaryButton, isSaving && styles.primaryButtonDisabled]}
               >
                 {isSaving ? (
-                  <ActivityIndicator size="small" color="white" />
+                  <ActivityIndicator size="small" color={Colors.primaryForeground} />
                 ) : (
                   <>
-                    <MaterialCommunityIcons name="check-circle" size={20} color="white" />
+                    <MaterialCommunityIcons name="check-circle" size={20} color={Colors.primaryForeground} />
                     <Text style={styles.primaryButtonText}>Confirm & Create Bill</Text>
                   </>
                 )}
@@ -735,7 +774,7 @@ export default function ReviewReceiptScreen() {
           <SafeAreaView style={styles.modal}>
             <View style={styles.modalHeader}>
               <TouchableOpacity onPress={() => setEditingItemId(null)}>
-                <MaterialCommunityIcons name="close" size={24} color="#0F172A" />
+                <MaterialCommunityIcons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
               <Text style={styles.modalTitle}>Edit Item</Text>
               <View style={{ width: 24 }} />
@@ -822,7 +861,7 @@ export default function ReviewReceiptScreen() {
           <SafeAreaView style={styles.modal}>
             <View style={styles.modalHeader}>
               <TouchableOpacity onPress={() => setShowAddItem(false)}>
-                <MaterialCommunityIcons name="close" size={24} color="#0F172A" />
+                <MaterialCommunityIcons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
               <Text style={styles.modalTitle}>Add Item</Text>
               <View style={{ width: 24 }} />
@@ -907,42 +946,48 @@ export default function ReviewReceiptScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: Colors.background,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: 'white',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    backgroundColor: Colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: Colors.border,
   },
   headerTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#0F172A',
+    fontSize: 19,
+    fontWeight: '700',
+    color: Colors.text,
   },
   cropLoadingContainer: {
     flex: 1,
-    backgroundColor: '#020617',
+    backgroundColor: Colors.background,
     justifyContent: 'center',
     alignItems: 'center',
     gap: 8,
   },
   cropLoadingText: {
-    color: '#CBD5E1',
+    color: Colors.textSecondary,
     fontSize: 14,
   },
   // Image preview
   imagePreviewContainer: {
-    height: 200,
-    backgroundColor: '#E2E8F0',
+    height: 220,
+    backgroundColor: Colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
-    marginBottom: 12,
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    overflow: 'hidden',
   },
   imagePreview: {
     width: '100%',
@@ -951,15 +996,17 @@ const styles = StyleSheet.create({
   cropImageButton: {
     position: 'absolute',
     flexDirection: 'row',
-    backgroundColor: '#3B82F6',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 6,
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
     alignItems: 'center',
     gap: 6,
+    borderWidth: 1,
+    borderColor: Colors.primary,
   },
   cropImageButtonText: {
-    color: 'white',
+    color: Colors.primaryForeground,
     fontWeight: '600',
     fontSize: 14,
   },
@@ -967,30 +1014,34 @@ const styles = StyleSheet.create({
   confidenceBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#ECFDF5',
-    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
     gap: 8,
     marginBottom: 8,
   },
   confidenceText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#059669',
+    color: Colors.text,
   },
   lowConfidenceWarning: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#FEE2E2',
-    borderRadius: 8,
+    paddingVertical: 10,
+    backgroundColor: Colors.error + '15',
+    borderRadius: 10,
     gap: 8,
+    borderWidth: 1,
+    borderColor: Colors.error + '55',
   },
   warningText: {
     fontSize: 14,
-    color: '#DC2626',
+    color: Colors.error,
     flex: 1,
   },
   lowConfidenceTag: {
@@ -998,26 +1049,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 8,
     paddingVertical: 4,
-    backgroundColor: '#FEE2E2',
-    borderRadius: 4,
+    backgroundColor: Colors.error + '15',
+    borderRadius: 8,
     gap: 4,
     marginBottom: 8,
+    borderWidth: 1,
+    borderColor: Colors.error + '55',
   },
   lowConfidenceTagText: {
     fontSize: 12,
-    color: '#DC2626',
+    color: Colors.error,
     fontWeight: '600',
   },
   lowConfidenceText: {
-    color: '#DC2626',
+    color: Colors.warning,
   },
   scrollView: {
     flex: 1,
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: 14,
   },
   section: {
-    marginBottom: 20,
+    marginBottom: 18,
+    backgroundColor: Colors.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: 14,
   },
   sectionHeader: {
     flexDirection: 'row',
@@ -1028,31 +1086,33 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#0F172A',
+    color: Colors.text,
   },
   addButton: {
     width: 40,
     height: 40,
-    borderRadius: 8,
-    backgroundColor: '#EFF6FF',
+    borderRadius: 12,
+    backgroundColor: Colors.surfaceHighlight,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   currencySelector: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
     paddingVertical: 10,
-    backgroundColor: 'white',
-    borderRadius: 8,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: Colors.border,
     gap: 8,
   },
   currencyText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#0F172A',
+    color: Colors.text,
   },
   emptyState: {
     alignItems: 'center',
@@ -1061,23 +1121,23 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#64748B',
+    color: Colors.textSecondary,
     marginTop: 12,
   },
   emptySubtext: {
     fontSize: 14,
-    color: '#94A3B8',
+    color: Colors.textMuted,
     marginTop: 4,
   },
   itemsList: {
-    gap: 12,
+    gap: 10,
   },
   itemCard: {
-    backgroundColor: 'white',
-    borderRadius: 8,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    padding: 12,
+    borderColor: Colors.border,
+    padding: 14,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -1091,22 +1151,22 @@ const styles = StyleSheet.create({
   itemName: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#0F172A',
+    color: Colors.text,
   },
   itemQuantity: {
     marginTop: 4,
   },
   quantityText: {
     fontSize: 12,
-    color: '#64748B',
+    color: Colors.textSecondary,
   },
   itemTotal: {
     alignItems: 'flex-end',
   },
   itemTotalAmount: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '700',
-    color: '#3B82F6',
+    color: Colors.primary,
   },
   deleteButton: {
     paddingHorizontal: 12,
@@ -1122,15 +1182,15 @@ const styles = StyleSheet.create({
   chargeLabel: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#0F172A',
+    color: Colors.text,
   },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'white',
-    borderRadius: 8,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: Colors.border,
     paddingHorizontal: 12,
   },
   input: {
@@ -1138,28 +1198,28 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     fontSize: 14,
     fontWeight: '500',
-    color: '#0F172A',
+    color: Colors.text,
   },
   currencyDot: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#64748B',
+    color: Colors.textMuted,
     marginLeft: 4,
   },
   summaryCard: {
-    backgroundColor: 'white',
-    borderRadius: 8,
+    backgroundColor: Colors.surface,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: Colors.border,
     padding: 16,
-    marginBottom: 16,
+    marginBottom: 20,
   },
   summaryRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: Colors.border,
   },
   totalRow: {
     borderBottomWidth: 0,
@@ -1167,85 +1227,89 @@ const styles = StyleSheet.create({
   },
   summaryLabel: {
     fontSize: 14,
-    color: '#64748B',
+    color: Colors.textSecondary,
   },
   summaryValue: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#0F172A',
+    color: Colors.text,
   },
   totalLabel: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#0F172A',
+    color: Colors.text,
   },
   totalValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#3B82F6',
+    fontSize: 18,
+    fontWeight: '800',
+    color: Colors.primary,
   },
   actions: {
     flexDirection: 'row',
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     gap: 12,
-    backgroundColor: 'white',
+    backgroundColor: Colors.surface,
     borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
+    borderTopColor: Colors.border,
   },
   primaryButton: {
-    flex: 1,
+    flex: 1.25,
     flexDirection: 'row',
-    paddingVertical: 12,
+    paddingVertical: 14,
     paddingHorizontal: 16,
-    backgroundColor: '#3B82F6',
-    borderRadius: 8,
+    backgroundColor: Colors.primary,
+    borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
     gap: 8,
+    borderWidth: 1,
+    borderColor: Colors.primary,
   },
   primaryButtonDisabled: {
-    backgroundColor: '#9CA3AF',
     opacity: 0.6,
   },
   primaryButtonText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '700',
-    color: 'white',
+    color: Colors.primaryForeground,
   },
   secondaryButton: {
-    flex: 1,
+    flex: 0.95,
     flexDirection: 'row',
-    paddingVertical: 12,
+    paddingVertical: 14,
     paddingHorizontal: 16,
-    backgroundColor: '#E2E8F0',
-    borderRadius: 8,
+    backgroundColor: Colors.background,
+    borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
     gap: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   secondaryButtonText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '700',
-    color: '#3B82F6',
+    color: Colors.text,
   },
   modal: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: Colors.background,
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: 'white',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    backgroundColor: Colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: Colors.border,
   },
   modalTitle: {
     fontSize: 18,
-    fontWeight: '600',
-    color: '#0F172A',
+    fontWeight: '700',
+    color: Colors.text,
   },
   modalContent: {
     flex: 1,
@@ -1255,11 +1319,11 @@ const styles = StyleSheet.create({
   modalActions: {
     flexDirection: 'row',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 14,
     gap: 12,
-    backgroundColor: 'white',
+    backgroundColor: Colors.surface,
     borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
+    borderTopColor: Colors.border,
   },
   formGroup: {
     marginBottom: 16,
@@ -1267,18 +1331,18 @@ const styles = StyleSheet.create({
   formLabel: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#0F172A',
+    color: Colors.text,
     marginBottom: 6,
   },
   textInput: {
     paddingVertical: 10,
     paddingHorizontal: 12,
-    backgroundColor: 'white',
-    borderRadius: 8,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: Colors.border,
     fontSize: 14,
-    color: '#0F172A',
+    color: Colors.text,
   },
   formRow: {
     flexDirection: 'row',
@@ -1287,20 +1351,22 @@ const styles = StyleSheet.create({
   subtotalBox: {
     paddingHorizontal: 12,
     paddingVertical: 12,
-    backgroundColor: '#EFF6FF',
-    borderRadius: 8,
+    backgroundColor: Colors.surfaceHighlight,
+    borderRadius: 12,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   subtotalLabel: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#0F172A',
+    color: Colors.text,
   },
   subtotalValue: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#3B82F6',
+    color: Colors.primary,
   },
 });

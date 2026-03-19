@@ -307,7 +307,7 @@ class ReceiptParser:
             if not name and i < len(filtered_lines):
                 next_line = filtered_lines[i].strip()
                 # Check if next line has quantity x price pattern (handles kp, rpi, rpo, etc.)
-                match = re.match(r'(\d+)\s*[xX×]\s*[RrKk][Pp]?[OoIi]?\s*([\d.,]+)\+?', next_line, re.IGNORECASE)
+                match = re.match(r'(\d+)\s*[xX×]\s*(?:[RrKk][Pp]?[OoIi]?\s*)?([\d.,]+)\+?', next_line, re.IGNORECASE)
                 if match:
                     # Current line is the item name
                     name = line
@@ -368,7 +368,7 @@ class ReceiptParser:
         return items
 
     @staticmethod
-    def _sanitize_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _sanitize_items(items: List[Dict[str, Any]], currency: str = '') -> List[Dict[str, Any]]:
         """Remove clearly implausible OCR items caused by merged numeric artifacts."""
         if len(items) < 2:
             return items
@@ -401,8 +401,115 @@ class ReceiptParser:
                     f"[OCR] Dropping suspicious outlier item: name='{name}', price={price}, min_price={min_price}, digit_ratio={digit_ratio:.2f}"
                 )
 
+        currency_code = (currency or '').upper().strip()
+        positive_prices_after_outlier = [float(item.get('price', 0.0)) for item in sanitized if float(item.get('price', 0.0)) > 0]
+        median_price = float(np.median(positive_prices_after_outlier)) if positive_prices_after_outlier else 0.0
+
+        # OCR in IDR receipts can create tiny phantom prices (e.g. 2, 5) from broken tokens.
+        # Drop only when the overall receipt price scale is clearly much higher.
+        filtered: List[Dict[str, Any]] = []
+        for item in sanitized:
+            price = float(item.get('price', 0.0) or 0.0)
+            qty = int(item.get('quantity', 1) or 1)
+            is_tiny_idr_noise = (
+                currency_code == 'IDR'
+                and median_price >= 2000
+                and price > 0
+                and price <= 10
+                and qty >= 1
+            )
+
+            if is_tiny_idr_noise:
+                logger.warning(
+                    f"[OCR] Dropping suspicious tiny IDR item: name='{item.get('name', '')}', price={price}, qty={qty}, median_price={median_price:.2f}"
+                )
+                continue
+
+            filtered.append(item)
+
+        deduped: List[Dict[str, Any]] = []
+        by_key: Dict[str, int] = {}
+        for item in filtered:
+            normalized_name = re.sub(r'\s+', ' ', str(item.get('name', '')).strip().lower())
+            qty = int(item.get('quantity', 1) or 1)
+            price = round(float(item.get('price', 0.0) or 0.0), 2)
+            key = f"{normalized_name}|{price}"
+
+            if key in by_key:
+                idx = by_key[key]
+                deduped[idx]['quantity'] = int(deduped[idx].get('quantity', 1)) + qty
+                deduped[idx]['subtotal'] = float(deduped[idx]['quantity']) * float(deduped[idx]['price'])
+                continue
+
+            clone = dict(item)
+            clone['quantity'] = qty
+            clone['price'] = price
+            clone['subtotal'] = float(qty) * price
+            by_key[key] = len(deduped)
+            deduped.append(clone)
+
         # Never drop all items; fallback to original extraction if filtering was too aggressive.
-        return sanitized if sanitized else items
+        return deduped if deduped else (filtered if filtered else (sanitized if sanitized else items))
+
+    @staticmethod
+    def _line_contains_any(line: str, keywords: List[str]) -> bool:
+        normalized = re.sub(r'[^a-z0-9%\s]', ' ', line.lower())
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        return any(keyword in normalized for keyword in keywords)
+
+    @staticmethod
+    def _extract_amount_from_line(line: str) -> float:
+        matches = re.findall(r'(?:rp|idr|usd|eur|sgd|chf)?\s*([\d][\d.,]{0,18})', line, flags=re.IGNORECASE)
+        if not matches:
+            return 0.0
+        for candidate in reversed(matches):
+            parsed = ReceiptParser.normalize_number(candidate)
+            if parsed > 0:
+                return parsed
+        return 0.0
+
+    @staticmethod
+    def _extract_percentage_from_line(line: str) -> float:
+        match = re.search(r'(\d{1,2}(?:[.,]\d+)?)\s*%', line)
+        if not match:
+            return 0.0
+        return ReceiptParser.normalize_number(match.group(1))
+
+    @staticmethod
+    def _is_noise_line_for_totals(line: str) -> bool:
+        normalized = re.sub(r'[^a-z0-9\s]', ' ', line.lower())
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        if not normalized:
+            return True
+
+        noise_keywords = [
+            'qris',
+            'oris',
+            'payment',
+            'paid',
+            'terima kasih',
+            'whatsapp',
+            'instagram',
+            'phone',
+            'telp',
+            'hp',
+            'debit',
+            'credit',
+            'cash',
+            'change',
+            'kembalian',
+        ]
+        if any(keyword in normalized for keyword in noise_keywords):
+            return True
+
+        if re.search(r'\+?\d{8,15}', normalized):
+            return True
+        if re.search(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b', normalized):
+            return True
+        if re.search(r'\b\d{1,2}:\d{2}(?::\d{2})?\b', normalized):
+            return True
+
+        return False
     
     @staticmethod
     def extract_totals(text: str) -> Dict[str, float]:
@@ -411,44 +518,137 @@ class ReceiptParser:
             'subtotal': 0.0,
             'tax': 0.0,
             'service_charge': 0.0,
-            'total': 0.0
+            'total': 0.0,
+            'parsing_error': False,
         }
-        
-        text_lower = text.lower()
-        
-        # Extract subtotal
-        subtotal_match = re.search(ReceiptParser.SUBTOTAL_PATTERN, text_lower)
-        if subtotal_match:
-            totals['subtotal'] = ReceiptParser.normalize_number(subtotal_match.group(2))
-        
-        # Extract tax (multiple patterns)
-        for pattern in [
-            r'(?:pajak|tax|ppn|pph)[\s:]+([\d.,]+)',
-            r'([\d.,]+)\s*(?:%|persen)?\s*pajak'
-        ]:
-            tax_match = re.search(pattern, text_lower)
-            if tax_match:
-                value = ReceiptParser.normalize_number(tax_match.group(1))
-                if value > 0 and value < 100:  # Likely percentage
-                    # Calculate tax from subtotal
-                    if totals['subtotal'] > 0:
-                        totals['tax'] = (totals['subtotal'] * value) / 100
-                else:
-                    totals['tax'] = value
-                break
-        
-        # Extract service charge
-        service_match = re.search(r'(?:service|svc|layanan)[\s:]+([\d.,]+)', text_lower)
-        if service_match:
-            totals['service_charge'] = ReceiptParser.normalize_number(service_match.group(1))
-        
-        # Extract total/grand total
-        total_match = re.search(ReceiptParser.TOTAL_PATTERN, text_lower)
-        if total_match:
-            totals['total'] = ReceiptParser.normalize_number(total_match.group(2))
-        else:
-            # Calculate from subtotal
-            totals['total'] = totals['subtotal'] + totals['tax'] + totals['service_charge']
+
+        raw_lines = [line.strip() for line in text.split('\n') if line.strip()]
+        lines = [line for line in raw_lines if not ReceiptParser._is_noise_line_for_totals(line)]
+
+        # Payment rows (e.g. QRIS/ORIS) can still contain the actual paid total.
+        payment_total_candidates: List[float] = []
+        for raw_line in raw_lines:
+            normalized_payment = re.sub(r'[^a-z0-9\s]', ' ', raw_line.lower())
+            normalized_payment = re.sub(r'\s+', ' ', normalized_payment).strip()
+            if any(keyword in normalized_payment for keyword in ['qris', 'oris', 'payment', 'paid', 'bayar']):
+                amount = ReceiptParser._extract_amount_from_line(raw_line)
+                if amount > 0:
+                    payment_total_candidates.append(amount)
+
+        def normalized(line: str) -> str:
+            line_lower = line.lower()
+            line_lower = re.sub(r'[^a-z0-9%\s]', ' ', line_lower)
+            return re.sub(r'\s+', ' ', line_lower).strip()
+
+        normalized_lines = [normalized(line) for line in lines]
+
+        def is_subtotal_label(line_norm: str) -> bool:
+            return bool(re.search(r'\bsub\s*total\b|\bsubtotal\b|\bsudtotal\b', line_norm))
+
+        def is_tax_label(line_norm: str) -> bool:
+            return bool(re.search(r'\b(pajak|tax|ppn|pph|pb1|pb\s*1)\b', line_norm))
+
+        def is_service_label(line_norm: str) -> bool:
+            return bool(re.search(r'\b(service|svc|layanan|service\s*charge|charge)\b', line_norm))
+
+        def is_grand_total_label(line_norm: str) -> bool:
+            return bool(re.search(r'\bgrand\s*total\b', line_norm))
+
+        def is_total_label(line_norm: str) -> bool:
+            return bool(re.search(r'\btotal\b', line_norm)) and not is_subtotal_label(line_norm) and not is_grand_total_label(line_norm)
+
+        def line_amount(line: str) -> float:
+            return ReceiptParser._extract_amount_from_line(line)
+
+        def label_amount_at(index: int) -> float:
+            # Strict extraction: use amount on label line, else check up to 2 following lines.
+            current_amount = line_amount(lines[index])
+            if current_amount > 0:
+                return current_amount
+
+            for offset in (1, 2):
+                next_index = index + offset
+                if next_index >= len(lines):
+                    break
+
+                next_norm = normalized_lines[next_index]
+                if any([
+                    is_subtotal_label(next_norm),
+                    is_tax_label(next_norm),
+                    is_service_label(next_norm),
+                    is_grand_total_label(next_norm),
+                    is_total_label(next_norm),
+                ]):
+                    break
+
+                candidate_amount = line_amount(lines[next_index])
+                if candidate_amount > 0:
+                    return candidate_amount
+
+            return 0.0
+
+        subtotal_idx = next((i for i, line in enumerate(normalized_lines) if is_subtotal_label(line)), None)
+        tax_idx = next((i for i, line in enumerate(normalized_lines) if is_tax_label(line)), None)
+        service_idx = next((i for i, line in enumerate(normalized_lines) if is_service_label(line)), None)
+        grand_total_idx = next((i for i, line in enumerate(normalized_lines) if is_grand_total_label(line)), None)
+        total_idx = next((i for i, line in enumerate(normalized_lines) if is_total_label(line)), None)
+
+        if subtotal_idx is not None:
+            totals['subtotal'] = label_amount_at(subtotal_idx)
+
+        if tax_idx is not None:
+            tax_amount = label_amount_at(tax_idx)
+            if tax_amount > 0:
+                totals['tax'] = tax_amount
+            else:
+                tax_percent = ReceiptParser._extract_percentage_from_line(lines[tax_idx])
+                if tax_percent > 0 and tax_percent <= 30 and totals['subtotal'] > 0:
+                    totals['tax'] = (totals['subtotal'] * tax_percent) / 100
+
+        if service_idx is not None:
+            service_amount = label_amount_at(service_idx)
+            if service_amount > 0:
+                totals['service_charge'] = service_amount
+            else:
+                service_percent = ReceiptParser._extract_percentage_from_line(lines[service_idx])
+                if service_percent > 0 and service_percent <= 30 and totals['subtotal'] > 0:
+                    totals['service_charge'] = (totals['subtotal'] * service_percent) / 100
+
+        grand_total_value = label_amount_at(grand_total_idx) if grand_total_idx is not None else 0.0
+        fallback_total_value = label_amount_at(total_idx) if total_idx is not None else 0.0
+        if grand_total_value > 0:
+            totals['total'] = grand_total_value
+        elif fallback_total_value > 0:
+            totals['total'] = fallback_total_value
+
+        # Anti-error validation: subtotal + tax + service should match total when all are present.
+        if totals['subtotal'] > 0 and totals['total'] > 0:
+            expected_total = totals['subtotal'] + totals['tax'] + totals['service_charge']
+            if abs(expected_total - totals['total']) > 1.0:
+                # Fallback 1: force grand-total priority when available.
+                if grand_total_value > 0:
+                    totals['total'] = grand_total_value
+
+                # Fallback 2: re-scan tax from its label neighborhood.
+                if tax_idx is not None:
+                    rescanned_tax = label_amount_at(tax_idx)
+                    if rescanned_tax > 0:
+                        totals['tax'] = rescanned_tax
+
+                # Fallback 3: if payment row (QRIS/ORIS/Paid) matches expected total, trust it.
+                expected_after_rescan = totals['subtotal'] + totals['tax'] + totals['service_charge']
+                for candidate in payment_total_candidates:
+                    if abs(candidate - expected_after_rescan) <= 1.0:
+                        totals['total'] = candidate
+                        break
+
+                if abs((totals['subtotal'] + totals['tax'] + totals['service_charge']) - totals['total']) > 1.0:
+                    totals['parsing_error'] = True
+
+        totals['subtotal'] = float(round(totals['subtotal'], 2))
+        totals['tax'] = float(round(totals['tax'], 2))
+        totals['service_charge'] = float(round(totals['service_charge'], 2))
+        totals['total'] = float(round(totals['total'], 2))
         
         return totals
     
@@ -491,16 +691,59 @@ class ReceiptParser:
         logger.info(ocr_text[:1500])
         logger.info("=" * 60)
         
+        currency = cls.extract_currency(ocr_text)
+
         # === PARSE ITEMS ===
         items = cls.extract_items(ocr_text)
-        items = cls._sanitize_items(items)
+        items = cls._sanitize_items(items, currency=currency)
         logger.info(f"Items extracted: {len(items)}")
         for idx, item in enumerate(items, 1):
             logger.info(f"  {idx}. {item['name']} - {item['quantity']}x {item['price']} = {item['subtotal']}")
         
         # === EXTRACT TOTALS ===
-        currency = cls.extract_currency(ocr_text)
         totals = cls.extract_totals(ocr_text)
+
+        # Backward-compatible fallback only when labeled totals are missing.
+        subtotal_from_items_fallback = False
+        if totals['subtotal'] <= 0 and items:
+            totals['subtotal'] = float(round(sum(float(item.get('subtotal', 0.0)) for item in items), 2))
+            subtotal_from_items_fallback = True
+
+        # If tax line is percentage-based (PB1/PPN/Tax xx%), convert it after subtotal is known.
+        percent_tax_match = re.search(
+            r'\b(?:pb1|ppn|tax|pajak)\b[^\n%]{0,20}?(\d{1,2}(?:[.,]\d+)?)\s*%',
+            ocr_text,
+            flags=re.IGNORECASE,
+        )
+        if percent_tax_match and totals['subtotal'] > 0:
+            tax_percent = cls.normalize_number(percent_tax_match.group(1))
+            if 0 < tax_percent <= 30:
+                # Replace OCR "tax=10" artifacts where 10 is actually a percentage marker.
+                if totals['tax'] <= 0 or abs(totals['tax'] - tax_percent) <= 0.1:
+                    totals['tax'] = float(round((totals['subtotal'] * tax_percent) / 100.0, 2))
+
+        if totals['total'] <= 0 and totals['subtotal'] > 0:
+            totals['total'] = float(round(totals['subtotal'] + totals['tax'] + totals['service_charge'], 2))
+
+        # If mismatch only appears after subtotal fallback, flag it and keep a safer total fallback.
+        if totals['subtotal'] > 0 and totals['total'] > 0:
+            expected_total = float(round(totals['subtotal'] + totals['tax'] + totals['service_charge'], 2))
+            if abs(expected_total - totals['total']) > 1.0:
+                totals['parsing_error'] = True
+                # Severe mismatch usually indicates a wrong "Total" line from OCR overlay/noise.
+                if subtotal_from_items_fallback and totals['total'] < (totals['subtotal'] * 0.2):
+                    totals['total'] = expected_total
+
+        # Guardrail for IDR: tiny tax values like 26.30 are often OCR-collapsed from 26.300.
+        tax_ambiguous = False
+        if currency == 'IDR' and totals['subtotal'] >= 50000 and totals['tax'] > 0:
+            has_tax_label = re.search(r'\b(pajak|tax|ppn|pb1|pb\s*1)\b', ocr_text, flags=re.IGNORECASE) is not None
+            has_percentage_marker = re.search(r'\b(pajak|tax|ppn|pb1|pb\s*1)\b[^\n%]{0,20}\d{1,2}(?:[.,]\d+)?\s*%', ocr_text, flags=re.IGNORECASE) is not None
+            has_decimal_tax_idr = re.search(r'\b(?:rp\s*)?\d{1,3}[.,]\d{2}\b', ocr_text, flags=re.IGNORECASE) is not None
+            tiny_ratio = (totals['tax'] / max(totals['subtotal'], 1.0)) < 0.001
+            if has_tax_label and not has_percentage_marker and (totals['tax'] < 100 or (tiny_ratio and has_decimal_tax_idr)):
+                tax_ambiguous = True
+                totals['parsing_error'] = True
         
         # === CONFIDENCE SCORING ===
         confidence_metrics = cls._calculate_confidence(
@@ -509,12 +752,6 @@ class ReceiptParser:
             ocr_text=ocr_text
         )
 
-        # Fallback totals for receipts without explicit subtotal/total labels.
-        if totals['subtotal'] <= 0 and items:
-            totals['subtotal'] = float(sum(item.get('subtotal', 0.0) for item in items))
-        if totals['total'] <= 0:
-            totals['total'] = totals['subtotal'] + totals['tax'] + totals['service_charge']
-        
         result = {
             'currency': currency,
             'items': items,
@@ -527,6 +764,8 @@ class ReceiptParser:
                 'item_count': len(items),
                 'has_total': totals['total'] > 0,
                 'has_tax': totals['tax'] > 0,
+                'parsing_error': bool(totals.get('parsing_error', False)),
+                'tax_ambiguous': bool(tax_ambiguous),
                 'price_consistency': confidence_metrics['price_consistency'],
                 'data_completeness': confidence_metrics['completeness']
             }

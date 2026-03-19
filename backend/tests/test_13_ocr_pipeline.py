@@ -229,3 +229,192 @@ def test_receipt_parser_excludes_transaction_metadata_lines():
     names = [item["name"].lower() for item in parsed["items"]]
 
     assert names == ["nasi campur"]
+
+
+def test_receipt_parser_detects_tax_and_service_keywords_with_amounts():
+    text = (
+        "Nasi Goreng\n"
+        "1 x Rp20.000\n"
+        "Es Teh\n"
+        "1 x Rp5.000\n"
+        "PPN : Rp2.500\n"
+        "Service Charge : Rp1.000\n"
+        "Total : Rp28.500\n"
+    )
+    parsed = ReceiptParser.parse_receipt(text)
+
+    assert parsed["subtotal"] == 25000.0
+    assert parsed["tax"] == 2500.0
+    assert parsed["service_charge"] == 1000.0
+    assert parsed["total"] == 28500.0
+
+
+def test_receipt_parser_detects_pb1_percentage_tax():
+    text = (
+        "Mie Ayam\n"
+        "1 x Rp18.000\n"
+        "Es Jeruk\n"
+        "1 x Rp7.000\n"
+        "PB1 10%\n"
+        "Total\n"
+    )
+    parsed = ReceiptParser.parse_receipt(text)
+
+    assert parsed["subtotal"] == 25000.0
+    assert parsed["tax"] == 2500.0
+    assert parsed["total"] == 27500.0
+
+
+def test_receipt_parser_handles_receipt_without_tax():
+    text = (
+        "Chicken Katsu\n"
+        "1 x 45.00\n"
+        "Iced Lemon Tea\n"
+        "1 x 12.00\n"
+    )
+    parsed = ReceiptParser.parse_receipt(text)
+
+    assert parsed["subtotal"] == 57.0
+    assert parsed["tax"] == 0.0
+    assert parsed["service_charge"] == 0.0
+    assert parsed["total"] == 57.0
+
+
+def test_receipt_parser_deduplicates_duplicate_items_and_ignores_qr_payment_noise():
+    text = (
+        "Nasi Uduk\n"
+        "1 x Rp12.000\n"
+        "Nasi Uduk\n"
+        "1 x Rp12.000\n"
+        "QRIS BCA : Rp24.000\n"
+        "Tanggal 19/03/2026\n"
+    )
+    parsed = ReceiptParser.parse_receipt(text)
+
+    assert len(parsed["items"]) == 1
+    assert parsed["items"][0]["name"].lower() == "nasi uduk"
+    assert parsed["items"][0]["quantity"] == 2
+    assert parsed["subtotal"] == 24000.0
+
+
+def test_receipt_parser_drops_tiny_idr_noise_items():
+    text = (
+        "Indoaie Banglades Jusbo\n"
+        "3 x Rp2\n"
+        "nasi telur MOJ\n"
+        "1 x Rp18.000\n"
+        "ampung 1/2 Mateng\n"
+        "1 x Rp8.000\n"
+        "teh Tawar Dingin\n"
+        "5 x Rp7.000\n"
+        "air Mineral\n"
+        "1 x Rp5\n"
+        "teh Tarik Dingin\n"
+        "1 x Rp18.000\n"
+    )
+    parsed = ReceiptParser.parse_receipt(text)
+
+    names = [item["name"].lower() for item in parsed["items"]]
+    assert all("indoaie" not in name for name in names)
+    assert all("air mineral" not in name for name in names)
+
+    # Keep valid items and quantities.
+    assert any("nasi telur moj" in name for name in names)
+    assert any("ampung 1/2 mateng" in name for name in names)
+    assert any("teh tawar dingin" in name for name in names)
+    assert any("teh tarik dingin" in name for name in names)
+    assert parsed["subtotal"] == 79000.0
+
+
+def test_receipt_parser_maps_subtotal_tax_grand_total_correctly_with_noise():
+    text = (
+        "nasi telur MOJ\n"
+        "1 x Rp18.000\n"
+        "teh Tawar Dingin\n"
+        "5 x Rp7.000\n"
+        "Subtotal\n"
+        "Rp263.000\n"
+        "Total\n"
+        "Rp263.000\n"
+        "Pajak\n"
+        "Rp26.300\n"
+        "Grand Total : Rp289.300\n"
+        "QRIS BHI\n"
+        "Rp289.300\n"
+        "Terima Kasih\n"
+        "Whatsapp : +6281111807322\n"
+    )
+
+    parsed = ReceiptParser.parse_receipt(text)
+
+    assert parsed["subtotal"] == 263000.0
+    assert parsed["tax"] == 26300.0
+    assert parsed["total"] == 289300.0
+    assert parsed["quality_metrics"]["parsing_error"] is False
+
+
+def test_receipt_parser_prioritizes_grand_total_over_total_label():
+    text = (
+        "Subtotal : Rp100.000\n"
+        "Tax : Rp10.000\n"
+        "Total : Rp100.000\n"
+        "Grand Total : Rp110.000\n"
+    )
+
+    parsed = ReceiptParser.parse_receipt(text)
+
+    assert parsed["subtotal"] == 100000.0
+    assert parsed["tax"] == 10000.0
+    assert parsed["total"] == 110000.0
+
+
+def test_receipt_parser_handles_sudtotal_typo_and_oris_paid_total():
+    text = (
+        "Sudtotal : Rp263.000\n"
+        "Total : Rp263.000\n"
+        "Pajak : Rp26.300\n"
+        "ORIS BHI : Rp289.300\n"
+    )
+
+    parsed = ReceiptParser.parse_receipt(text)
+
+    assert parsed["subtotal"] == 263000.0
+    assert parsed["tax"] == 26300.0
+    assert parsed["total"] == 289300.0
+    assert parsed["quality_metrics"]["parsing_error"] is False
+
+
+def test_receipt_parser_flags_and_recovers_severe_total_mismatch_after_subtotal_fallback():
+    text = (
+        "Indomie Banglades Jumbo\n"
+        "3 x Rp25.000\n"
+        "Indomie Banglades Spesial\n"
+        "2 x Rp25.000\n"
+        "Pajak: Rp26.30\n"
+        "Total: 578.60\n"
+        "Bill | #1 | #2 | #3\n"
+    )
+
+    parsed = ReceiptParser.parse_receipt(text)
+
+    assert parsed["subtotal"] == 125000.0
+    assert parsed["tax"] == 26.3
+    assert parsed["total"] == 125026.3
+    assert parsed["quality_metrics"]["parsing_error"] is True
+
+
+def test_receipt_parser_marks_ambiguous_idr_tiny_tax_from_decimal_artifact():
+    text = (
+        "Nasi Goreng\n"
+        "2 x Rp25.000\n"
+        "Subtotal : Rp50.000\n"
+        "Pajak: Rp26.30\n"
+        "Total : Rp50.026\n"
+    )
+
+    parsed = ReceiptParser.parse_receipt(text)
+
+    assert parsed["subtotal"] == 50000.0
+    assert parsed["tax"] == 26.3
+    assert parsed["quality_metrics"]["tax_ambiguous"] is True
+    assert parsed["quality_metrics"]["parsing_error"] is True

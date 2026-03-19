@@ -1512,6 +1512,7 @@ async def scan_receipt(
             "service_charge": round(parsed["service_charge"], 2),
             "total": round(parsed["total"], 2),
             "confidence": round(parsed["confidence"], 2),
+            "quality_metrics": parsed.get("quality_metrics", {}),
             "ocr_text": ocr_text  # For debugging/review
         }
     
@@ -1663,6 +1664,7 @@ async def rescan_cropped_receipt(
             "service_charge": round(parsed["service_charge"], 2),
             "total": round(parsed["total"], 2),
             "confidence": round(parsed["confidence"], 2),
+            "quality_metrics": parsed.get("quality_metrics", {}),
             "ocr_text": ocr_text
         }
     

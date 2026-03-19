@@ -64,6 +64,21 @@ export default function CreateBillScreen() {
   const [taxType, setTaxType] = useState<'percentage' | 'fixed'>('percentage');
   const [taxValue, setTaxValue] = useState('');
   const [serviceCharge, setServiceCharge] = useState('');
+  const [ocrWarning, setOcrWarning] = useState<string>('');
+
+  useEffect(() => {
+    const stepParamRaw = typeof params.initialStep === 'string' ? params.initialStep : '';
+    if (!stepParamRaw) {
+      return;
+    }
+
+    const parsedStep = Number.parseInt(stepParamRaw, 10);
+    if (Number.isNaN(parsedStep)) {
+      return;
+    }
+
+    setStep(Math.min(4, Math.max(0, parsedStep)));
+  }, [params.initialStep]);
 
   // Load receipt data from scan if provided
   useEffect(() => {
@@ -75,6 +90,18 @@ export default function CreateBillScreen() {
     if (params.receiptData) {
       try {
         const receiptData = JSON.parse(params.receiptData as string);
+
+        const hasParsingError = Boolean(receiptData?.quality_metrics?.parsing_error);
+        const hasTaxAmbiguous = Boolean(receiptData?.quality_metrics?.tax_ambiguous);
+        if (hasParsingError && hasTaxAmbiguous) {
+          setOcrWarning('OCR totals and tax look ambiguous. Please verify tax/service before creating bill.');
+        } else if (hasParsingError) {
+          setOcrWarning('OCR totals may be inconsistent. Please verify subtotal, tax, and total.');
+        } else if (hasTaxAmbiguous) {
+          setOcrWarning('OCR detected ambiguous tax value. Please confirm tax manually.');
+        } else {
+          setOcrWarning('');
+        }
 
         const receiptTitle = typeof receiptData.bill_title === 'string'
           ? receiptData.bill_title.trim()
@@ -101,9 +128,14 @@ export default function CreateBillScreen() {
           setCurrency(receiptData.currency);
         }
         
-        // Set tax
-        if (receiptData.tax) {
-          setTaxValue(receiptData.tax.toString());
+        // OCR payload tax is nominal amount unless tax_type explicitly says otherwise
+        if (receiptData.tax !== undefined && receiptData.tax !== null) {
+          const parsedTax = Number.parseFloat(receiptData.tax.toString());
+          if (!Number.isNaN(parsedTax)) {
+            setTaxValue(parsedTax.toString());
+            const incomingTaxType = receiptData.tax_type === 'percentage' ? 'percentage' : 'fixed';
+            setTaxType(incomingTaxType);
+          }
         }
         
         // Set service charge
@@ -378,6 +410,13 @@ export default function CreateBillScreen() {
             </View>
           ))}
         </View>
+
+        {ocrWarning ? (
+          <View style={styles.ocrWarningBox}>
+            <Ionicons name="warning-outline" size={18} color={Colors.warning} />
+            <Text style={styles.ocrWarningText}>{ocrWarning}</Text>
+          </View>
+        ) : null}
 
         <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           {step === 0 && (
@@ -721,6 +760,24 @@ const styles = StyleSheet.create({
   subtitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 12 },
   statusBadge: { flexDirection: 'row', gap: 6, alignItems: 'center', backgroundColor: Colors.success + '15', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
   statusText: { fontSize: 12, color: Colors.success, fontWeight: '600' },
+  ocrWarningBox: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+    marginHorizontal: 24,
+    marginBottom: 12,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.warning + '55',
+    backgroundColor: Colors.warning + '18',
+  },
+  ocrWarningText: {
+    flex: 1,
+    fontSize: 13,
+    color: Colors.warning,
+    fontWeight: '600',
+  },
   assignmentReviewBlock: {
     marginBottom: 10,
   },

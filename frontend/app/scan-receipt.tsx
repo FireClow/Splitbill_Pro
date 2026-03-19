@@ -29,6 +29,10 @@ interface ScannedReceipt {
   service_charge: number;
   total: number;
   confidence: number;
+  quality_metrics?: {
+    parsing_error?: boolean;
+    tax_ambiguous?: boolean;
+  };
   ocr_text: string;
 }
 
