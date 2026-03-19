@@ -72,7 +72,7 @@ if ($InstallFrontendDeps -or -not (Test-Path (Join-Path $frontendDir 'node_modul
 
 if (-not (Test-PortOpen -Port 8081)) {
     Write-Host '[Frontend] Starting Expo web on 127.0.0.1:8081...' -ForegroundColor Cyan
-    $frontendProc = Start-Process -FilePath 'npm' -ArgumentList 'run web' -WorkingDirectory $frontendDir -PassThru
+    $frontendProc = Start-Process -FilePath 'npm.cmd' -ArgumentList 'run web' -WorkingDirectory $frontendDir -PassThru
     Set-Content -Path $frontendPidFile -Value $frontendProc.Id -NoNewline
     Start-Sleep -Seconds 4
 }

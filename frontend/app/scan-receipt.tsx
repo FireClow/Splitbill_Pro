@@ -8,6 +8,7 @@ import {
   Alert,
   SafeAreaView,
   ScrollView,
+  TextInput,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
@@ -91,9 +92,17 @@ export default function ScanReceiptScreen() {
   const [loading, setLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [ocrError, setOcrError] = useState<string | null>(null);
-  const [scanned, setScanned] = useState<ScannedReceipt | null>(null);
+  const [billTitle, setBillTitle] = useState('');
   const [hasAutoOpenedSource, setHasAutoOpenedSource] = useState(false);
   const cameraRef = useRef<CameraView>(null);
+
+  const ensureBillTitle = useCallback(() => {
+    if (billTitle.trim()) {
+      return true;
+    }
+    Alert.alert('Bill Name Required', 'Please enter a bill name before scanning receipt.');
+    return false;
+  }, [billTitle]);
 
   // Request permissions on mount
   useEffect(() => {
@@ -127,7 +136,10 @@ export default function ScanReceiptScreen() {
 
       // Get proper session token from storage
       const sessionToken = await AsyncStorage.getItem('session_token');
-      const authHeader = sessionToken ? `Bearer ${sessionToken}` : 'Bearer guest';
+      if (!sessionToken) {
+        throw new Error('Session not ready. Please wait a moment and try again.');
+      }
+      const authHeader = `Bearer ${sessionToken}`;
       console.log(`[OCR] Auth header: ${authHeader.substring(0, 20)}...`);
 
       let response: { status: number; ok: boolean; bodyText: string } | null = null;
@@ -235,6 +247,7 @@ export default function ScanReceiptScreen() {
               scannedData: JSON.stringify({
                 ...result,
                 image_uri: previewImageUri,
+                bill_title: billTitle.trim(),
               }),
             },
           });
@@ -258,10 +271,14 @@ export default function ScanReceiptScreen() {
       setLoading(false);
       setTimeout(() => setUploadProgress(0), 200);
     }
-  }, [router]);
+  }, [billTitle, router]);
 
   // Handle taking photo with camera
   const handleTakePhoto = useCallback(async () => {
+    if (!ensureBillTitle()) {
+      return;
+    }
+
     if (!cameraRef.current) return;
 
     try {
@@ -280,10 +297,14 @@ export default function ScanReceiptScreen() {
     } finally {
       setLoading(false);
     }
-  }, [uploadAndScanReceipt]);
+  }, [ensureBillTitle, uploadAndScanReceipt]);
 
   // Handle gallery image selection
   const handlePickImage = useCallback(async () => {
+    if (!ensureBillTitle()) {
+      return;
+    }
+
     try {
       setLoading(true);
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -302,38 +323,26 @@ export default function ScanReceiptScreen() {
     } finally {
       setLoading(false);
     }
-  }, [uploadAndScanReceipt]);
+  }, [ensureBillTitle, uploadAndScanReceipt]);
 
   useEffect(() => {
     if (hasAutoOpenedSource) return;
     if (params.source === 'camera') {
+      if (!ensureBillTitle()) {
+        return;
+      }
       setCameraMode('camera');
       setHasAutoOpenedSource(true);
       return;
     }
     if (params.source === 'gallery') {
+      if (!ensureBillTitle()) {
+        return;
+      }
       setHasAutoOpenedSource(true);
       handlePickImage();
     }
-  }, [params.source, hasAutoOpenedSource, handlePickImage]);
-
-  // Navigate to review screen with scanned data
-  const handleReviewResults = () => {
-    if (scanned) {
-      router.push({
-        pathname: '/review-receipt',
-        params: {
-          scannedData: JSON.stringify(scanned),
-        },
-      });
-    }
-  };
-
-  // Reset scan
-  const handleRetakeScan = () => {
-    setScanned(null);
-    setCameraMode(null);
-  };
+  }, [params.source, hasAutoOpenedSource, handlePickImage, ensureBillTitle]);
 
   // Render camera view
   if (cameraMode === 'camera' && permission?.granted) {
@@ -412,121 +421,6 @@ export default function ScanReceiptScreen() {
     );
   }
 
-  // Render scanned results
-  if (scanned) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-          <View style={styles.content}>
-            {/* Header */}
-            <View style={styles.header}>
-              <TouchableOpacity onPress={() => {
-                setScanned(null);
-                setCameraMode(null);
-                router.replace('/');
-              }} hitSlop={8}>
-                <MaterialCommunityIcons name="close" size={24} color={Colors.text} />
-              </TouchableOpacity>
-              <Text style={styles.headerTitle}>Receipt Details</Text>
-              <View style={{ width: 24 }} />
-            </View>
-
-            {/* Confidence badge */}
-            <View
-              style={[
-                styles.confidenceBadge,
-                {
-                  backgroundColor:
-                    scanned.confidence > 0.8
-                      ? Colors.success
-                      : scanned.confidence > 0.6
-                      ? Colors.warning
-                      : Colors.error,
-                },
-              ]}
-            >
-              <Text style={styles.confidenceEmoji}>
-                {scanned.confidence > 0.8 ? '✅' : scanned.confidence > 0.6 ? '⚠️' : '❌'}
-              </Text>
-              <Text style={styles.confidenceText}>
-                {Math.round(scanned.confidence * 100)}% accuracy
-              </Text>
-            </View>
-
-            {/* Total amount - Big and clear */}
-            <View style={styles.totalCard}>
-              <Text style={styles.totalLabel}>Total Amount</Text>
-              <Text style={styles.totalAmount}>
-                {scanned.currency} {scanned.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </Text>
-              <Text style={styles.itemCountText}>{scanned.items.length} items detected</Text>
-            </View>
-
-            {/* Breakdown */}
-            <View style={styles.breakdownCard}>
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownLabel}>Subtotal</Text>
-                <Text style={styles.breakdownValue}>{scanned.subtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-              </View>
-              {scanned.tax > 0 && (
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Tax</Text>
-                  <Text style={styles.breakdownValue}>{scanned.tax.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-                </View>
-              )}
-              {scanned.service_charge > 0 && (
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Service</Text>
-                  <Text style={styles.breakdownValue}>{scanned.service_charge.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-                </View>
-              )}
-            </View>
-
-            {/* Items preview */}
-            <View style={styles.itemsCard}>
-              <Text style={styles.itemsTitle}>Items</Text>
-              {scanned.items.slice(0, 5).map((item, idx) => (
-                <View key={idx} style={styles.itemRow}>
-                  <View style={styles.itemRowLeft}>
-                    <Text style={styles.itemQty}>{item.quantity}x</Text>
-                    <Text style={styles.itemName} numberOfLines={1}>
-                      {item.name}
-                    </Text>
-                  </View>
-                  <Text style={styles.itemPrice}>{item.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-                </View>
-              ))}
-              {scanned.items.length > 5 && (
-                <Text style={styles.moreCountText}>+{scanned.items.length - 5} more items</Text>
-              )}
-            </View>
-          </View>
-        </ScrollView>
-
-        {/* Action buttons - fixed at bottom */}
-        <View style={styles.bottomActions}>
-          <TouchableOpacity
-            onPress={handleRetakeScan}
-            style={styles.secondaryButton}
-            activeOpacity={0.7}
-          >
-            <MaterialCommunityIcons name="camera-retake" size={18} color={Colors.text} />
-            <Text style={styles.secondaryButtonText}>Retake</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={handleReviewResults}
-            style={styles.primaryButton}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.primaryButtonText}>Proceed</Text>
-            <MaterialCommunityIcons name="chevron-right" size={18} color={Colors.primaryForeground} />
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   // Render initial screen
   return (
     <SafeAreaView style={styles.container}>
@@ -557,10 +451,28 @@ export default function ScanReceiptScreen() {
             </Text>
           </View>
 
+          <View style={styles.inputCard}>
+            <Text style={styles.inputLabel}>Bill Name</Text>
+            <TextInput
+              testID="ocr-bill-title-input"
+              style={styles.titleInput}
+              value={billTitle}
+              onChangeText={setBillTitle}
+              placeholder="e.g. Dinner at Hachi"
+              placeholderTextColor={Colors.muted}
+              returnKeyType="done"
+            />
+          </View>
+
           {/* Options */}
           <View style={styles.optionsContainer}>
             <TouchableOpacity
-              onPress={() => setCameraMode('camera')}
+              onPress={() => {
+                if (!ensureBillTitle()) {
+                  return;
+                }
+                setCameraMode('camera');
+              }}
               style={styles.optionButton}
               activeOpacity={0.7}
             >
@@ -595,7 +507,7 @@ export default function ScanReceiptScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              onPress={() => router.push('/create-bill')}
+              onPress={() => router.push({ pathname: '/create-bill', params: { prefillTitle: billTitle.trim() } })}
               style={styles.optionButton}
               activeOpacity={0.7}
             >
@@ -669,6 +581,32 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.textSecondary,
     textAlign: 'center',
+  },
+  inputCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginBottom: 16,
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  titleInput: {
+    height: 46,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+    paddingHorizontal: 12,
+    color: Colors.text,
+    fontSize: 15,
   },
   optionsContainer: {
     gap: 8,

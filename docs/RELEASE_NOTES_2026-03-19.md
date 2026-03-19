@@ -41,3 +41,26 @@ This release finalizes OCR parsing hardening, scanner-style manual crop stabilit
 - Cleaner OCR item output for split calculations.
 - Better manual control and reliability in crop-and-rescan flow.
 - More predictable participant behavior in create-bill flow.
+
+## Addendum - Audit Hardening (2026-03-19)
+
+### Security and Access Control
+- Added centralized bill access guard to enforce owner-only behavior on sensitive mutations.
+- Enforced authorization checks on bill detail, item, participant, split, payment, and share-link endpoints.
+- Added regression tests for foreign-bill access prevention.
+
+### OCR and Create Flow UX
+- Enforced bill name input before OCR scan starts.
+- Carried bill title across scan -> review -> create flow to reduce repeated typing.
+- Hardened review-receipt item sanitization before confirmation.
+- Removed dead scanned-state branch in scan screen to simplify navigation flow.
+
+### Dev and Test Reliability
+- Fixed Windows dev startup script to use `npm.cmd` so Expo web starts reliably.
+- Stabilized backend pytest with isolated test server URL and automatic uvicorn lifecycle in `backend/tests/conftest.py`.
+- Aligned backend test default URLs and added isolated access control test suite.
+
+### Updated Validation Status
+- Backend full suite: 93 passed.
+- Frontend lint: passed.
+- Backend syntax compile (`py_compile server.py`): passed.

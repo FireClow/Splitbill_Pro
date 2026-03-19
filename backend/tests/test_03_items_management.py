@@ -6,7 +6,7 @@ import pytest
 import os
 import time
 
-BASE_URL = os.environ.get('EXPO_PUBLIC_BACKEND_URL') or 'http://localhost:8001'
+BASE_URL = os.environ.get('EXPO_PUBLIC_BACKEND_URL') or 'http://127.0.0.1:8000'
 if BASE_URL:
     BASE_URL = BASE_URL.rstrip('/')
 

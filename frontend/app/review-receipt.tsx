@@ -92,10 +92,19 @@ const polygonArea = (points: CropPoint[]): number => {
 export default function ReviewReceiptScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  
-  const scannedData = params.scannedData
-    ? JSON.parse(params.scannedData as string)
-    : null;
+
+  let scannedData: (ScannedReceipt & { bill_title?: string }) | null = null;
+  if (typeof params.scannedData === 'string') {
+    try {
+      const parsed = JSON.parse(params.scannedData);
+      if (parsed && typeof parsed === 'object') {
+        scannedData = parsed as ScannedReceipt & { bill_title?: string };
+      }
+    } catch (error) {
+      console.warn('Invalid scannedData payload:', error);
+    }
+  }
+  const billTitle = (typeof scannedData?.bill_title === 'string' ? scannedData.bill_title : '').trim();
 
   const [data, setData] = useState<ScannedReceipt>(scannedData || {
     currency: 'USD',
@@ -284,7 +293,16 @@ export default function ReviewReceiptScreen() {
 
   // Confirm and save to database
   const handleConfirmReceipt = async () => {
-    if (data.items.length === 0) {
+    const normalizedItems = data.items
+      .map((item) => ({
+        ...item,
+        name: (item.name || '').trim(),
+        quantity: Number.isFinite(item.quantity) ? Math.max(1, Math.trunc(item.quantity)) : 1,
+        price: Number.isFinite(item.price) ? Math.max(0, item.price) : 0,
+      }))
+      .filter((item) => item.name.length > 0 && item.price > 0);
+
+    if (normalizedItems.length === 0) {
       Alert.alert('Validation', 'Please add at least one item');
       return;
     }
@@ -296,7 +314,7 @@ export default function ReviewReceiptScreen() {
       const payload = {
         image_id: data.image_id,
         currency: data.currency,
-        items: data.items,
+        items: normalizedItems,
         subtotal: data.subtotal,
         tax: data.tax,
         service_charge: data.service_charge,
@@ -331,6 +349,8 @@ export default function ReviewReceiptScreen() {
           params: {
             receiptData: JSON.stringify({
               ...data,
+              items: normalizedItems,
+              bill_title: billTitle,
               bill_id: result.bill_id || '',
             }),
           },
@@ -347,8 +367,19 @@ export default function ReviewReceiptScreen() {
 
   // Update item
   const handleUpdateItem = (item: ReceiptItem) => {
+    const sanitizedName = (item.name || '').trim();
+    const sanitizedQuantity = Number.isFinite(item.quantity) ? Math.max(1, Math.trunc(item.quantity)) : 1;
+    const sanitizedPrice = Number.isFinite(item.price) ? Math.max(0, item.price) : 0;
+
+    if (!sanitizedName || sanitizedPrice <= 0) {
+      Alert.alert('Validation', 'Item name and price must be valid');
+      return;
+    }
+
     const updatedItems = data.items.map(i =>
-      i.id === item.id ? item : i
+      i.id === item.id
+        ? { ...item, name: sanitizedName, quantity: sanitizedQuantity, price: sanitizedPrice }
+        : i
     );
     const totals = calculateTotals(updatedItems);
     setData({
@@ -389,16 +420,20 @@ export default function ReviewReceiptScreen() {
 
   // Add new item
   const handleAddItem = () => {
-    if (!newItem.name || newItem.price <= 0) {
+    const sanitizedName = newItem.name.trim();
+    const sanitizedQuantity = Number.isFinite(newItem.quantity) ? Math.max(1, Math.trunc(newItem.quantity)) : 1;
+    const sanitizedPrice = Number.isFinite(newItem.price) ? Math.max(0, newItem.price) : 0;
+
+    if (!sanitizedName || sanitizedPrice <= 0) {
       Alert.alert('Error', 'Please enter item name and price');
       return;
     }
 
     const item: ReceiptItem = {
       id: `item_${Date.now()}`,
-      name: newItem.name,
-      quantity: newItem.quantity || 1,
-      price: newItem.price,
+      name: sanitizedName,
+      quantity: sanitizedQuantity,
+      price: sanitizedPrice,
     };
 
     const updatedItems = [...data.items, item];

@@ -67,9 +67,23 @@ export default function CreateBillScreen() {
 
   // Load receipt data from scan if provided
   useEffect(() => {
+    const prefillTitleParam = typeof params.prefillTitle === 'string' ? params.prefillTitle.trim() : '';
+    if (prefillTitleParam) {
+      setTitle(prefillTitleParam);
+    }
+
     if (params.receiptData) {
       try {
         const receiptData = JSON.parse(params.receiptData as string);
+
+        const receiptTitle = typeof receiptData.bill_title === 'string'
+          ? receiptData.bill_title.trim()
+          : typeof receiptData.title === 'string'
+            ? receiptData.title.trim()
+            : '';
+        if (receiptTitle) {
+          setTitle(receiptTitle);
+        }
         
         // Populate items
         if (receiptData.items && receiptData.items.length > 0) {
@@ -101,7 +115,7 @@ export default function CreateBillScreen() {
         console.warn('Failed to parse receipt data:', error);
       }
     }
-  }, [params.receiptData]);
+  }, [params.prefillTitle, params.receiptData]);
 
   const addItem = () => setItems([
     ...items,

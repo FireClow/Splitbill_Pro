@@ -371,6 +371,27 @@ async def check_bill_limit(user: dict) -> None:
     if active_count >= limits["max_active_bills"]:
         raise HTTPException(status_code=403, detail=f"Active bill limit reached ({limits['max_active_bills']}). Upgrade to Pro for unlimited bills.")
 
+
+def _is_bill_participant(bill: dict, user: dict) -> bool:
+    user_email = str(user.get("email", "")).strip().lower()
+    if not user_email:
+        return False
+    for participant in bill.get("participants", []):
+        contact = str(participant.get("contact_info", "")).strip().lower()
+        if contact and contact == user_email:
+            return True
+    return False
+
+
+def ensure_bill_access(bill: dict, user: dict, owner_only: bool = False) -> None:
+    if bill.get("owner_id") == user.get("user_id"):
+        return
+    if owner_only:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if _is_bill_participant(bill, user):
+        return
+    raise HTTPException(status_code=403, detail="Not authorized")
+
 async def log_audit(user_id: str, action: str, entity: str, entity_id: str, details: str = ""):
     await db.audit_logs.insert_one({
         "log_id": f"log_{uuid.uuid4().hex[:12]}",
@@ -979,6 +1000,7 @@ async def get_bill(bill_id: str, user: dict = Depends(get_current_user)):
     bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    ensure_bill_access(bill, user)
     return bill
 
 @api_router.put("/bills/{bill_id}")
@@ -986,8 +1008,7 @@ async def update_bill(bill_id: str, data: BillUpdate, user: dict = Depends(get_c
     bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
-    if bill["owner_id"] != user["user_id"]:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    ensure_bill_access(bill, user, owner_only=True)
     updates = {k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None}
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     bill.update(updates)
@@ -1004,8 +1025,7 @@ async def delete_bill(bill_id: str, user: dict = Depends(get_current_user)):
     bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
-    if bill["owner_id"] != user["user_id"]:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    ensure_bill_access(bill, user, owner_only=True)
     await db.bills.delete_one({"bill_id": bill_id})
     await db.share_links.delete_many({"bill_id": bill_id})
     await log_audit(user["user_id"], "delete_bill", "bill", bill_id)
@@ -1018,6 +1038,7 @@ async def add_item(bill_id: str, data: BillItemCreate, user: dict = Depends(get_
     bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    ensure_bill_access(bill, user, owner_only=True)
     valid_participant_ids = {p["participant_id"] for p in bill.get("participants", [])}
     item = normalize_item_payload_or_http({
         "item_id": f"item_{uuid.uuid4().hex[:12]}",
@@ -1041,6 +1062,7 @@ async def update_item(bill_id: str, item_id: str, data: BillItemUpdate, user: di
     bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    ensure_bill_access(bill, user, owner_only=True)
     items = bill.get("items", [])
     for i, item in enumerate(items):
         if item["item_id"] == item_id:
@@ -1062,6 +1084,7 @@ async def delete_item(bill_id: str, item_id: str, user: dict = Depends(get_curre
     bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    ensure_bill_access(bill, user, owner_only=True)
     items = [i for i in bill.get("items", []) if i["item_id"] != item_id]
     bill["items"] = items
     totals = compute_bill_totals(bill)
@@ -1077,6 +1100,7 @@ async def add_participant(bill_id: str, data: ParticipantCreate, user: dict = De
     bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    ensure_bill_access(bill, user, owner_only=True)
     participant = {"participant_id": f"part_{uuid.uuid4().hex[:12]}", "name": data.name, "contact_info": data.contact_info or "", "is_owner": False}
     bill["participants"].append(participant)
     splits = calculate_splits_or_http_error(bill, bill.get("split_method", "equal"))
@@ -1089,6 +1113,7 @@ async def remove_participant(bill_id: str, participant_id: str, user: dict = Dep
     bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    ensure_bill_access(bill, user, owner_only=True)
     bill["participants"] = [p for p in bill["participants"] if p["participant_id"] != participant_id]
     for item in bill["items"]:
         item["assigned_to"] = [pid for pid in item.get("assigned_to", []) if pid != participant_id]
@@ -1109,6 +1134,7 @@ async def recalculate_split(bill_id: str, data: SplitRequest, user: dict = Depen
     bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    ensure_bill_access(bill, user, owner_only=True)
     splits = calculate_splits_or_http_error(bill, data.method, data.custom_splits, data.percentages)
     await db.bills.update_one({"bill_id": bill_id}, {"$set": {"splits": splits, "split_method": data.method, "updated_at": datetime.now(timezone.utc).isoformat()}})
     return await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
@@ -1125,6 +1151,15 @@ async def update_payment(bill_id: str, participant_id: str, data: PaymentUpdate,
     bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    ensure_bill_access(bill, user)
+
+    if bill.get("owner_id") != user.get("user_id"):
+        matching_participant = next((p for p in bill.get("participants", []) if p.get("participant_id") == participant_id), None)
+        participant_contact = str((matching_participant or {}).get("contact_info", "")).strip().lower()
+        user_email = str(user.get("email", "")).strip().lower()
+        if not matching_participant or not participant_contact or participant_contact != user_email:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
     splits = bill.get("splits", [])
     for s in splits:
         if s["participant_id"] == participant_id:
@@ -1183,6 +1218,7 @@ async def create_share_link(bill_id: str, data: ShareLinkCreate, user: dict = De
     bill = await db.bills.find_one({"bill_id": bill_id}, {"_id": 0})
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
+    ensure_bill_access(bill, user, owner_only=True)
     existing = await db.share_links.find_one({"bill_id": bill_id}, {"_id": 0})
     if existing:
         return existing
@@ -1741,6 +1777,8 @@ async def confirm_receipt(
             "message": "Receipt confirmed and ready to create bill"
         }
     
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[OCR] Confirm receipt failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to confirm receipt: {str(e)}")

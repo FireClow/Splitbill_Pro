@@ -2,11 +2,83 @@ import pytest
 import requests
 import os
 import time
+import subprocess
+import socket
+import sys
+from pathlib import Path
 
-# Use the public frontend URL for testing (backend is accessible via /api prefix through ingress)
-BASE_URL = os.environ.get('EXPO_PUBLIC_BACKEND_URL') or 'http://localhost:8001'
+# Use an isolated backend URL for pytest runs unless explicitly overridden.
+DEFAULT_TEST_BASE_URL = os.environ.get('PYTEST_BACKEND_URL') or 'http://127.0.0.1:18001'
+os.environ['EXPO_PUBLIC_BACKEND_URL'] = DEFAULT_TEST_BASE_URL
+BASE_URL = os.environ.get('EXPO_PUBLIC_BACKEND_URL') or DEFAULT_TEST_BASE_URL
 if BASE_URL:
     BASE_URL = BASE_URL.rstrip('/')
+
+
+def _is_port_open(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.3)
+        return sock.connect_ex((host, port)) == 0
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_backend_server():
+    """Start local backend server when tests run without a pre-started API."""
+    backend_dir = Path(__file__).resolve().parent.parent
+    host = "127.0.0.1"
+    default_port = 18001
+    base_url = os.environ.get('EXPO_PUBLIC_BACKEND_URL') or f'http://{host}:{default_port}'
+    parsed_port = default_port
+    try:
+        parsed_port = int(base_url.rsplit(':', 1)[1])
+    except (TypeError, ValueError, IndexError):
+        parsed_port = default_port
+    port = parsed_port
+    process = None
+
+    if not _is_port_open(host, port):
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "server:app",
+                "--host",
+                host,
+                "--port",
+                str(port),
+            ],
+            cwd=str(backend_dir),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        ready = False
+        health_url = f"http://{host}:{port}/api/health"
+        for _ in range(80):
+            if process and process.poll() is not None:
+                break
+            try:
+                response = requests.get(health_url, timeout=1.0)
+                if response.status_code == 200:
+                    ready = True
+                    break
+            except Exception:
+                time.sleep(0.25)
+
+        if not ready:
+            if process and process.poll() is None:
+                process.terminate()
+            raise RuntimeError(f"Backend test server failed to start on {health_url}")
+
+    yield
+
+    if process and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
 @pytest.fixture(scope="session")
 def api_client():
