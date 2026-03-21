@@ -1,43 +1,18 @@
-import { useState, useEffect, useCallback } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet, RefreshControl, ActivityIndicator, TextInput } from 'react-native';
+import { useMemo, useState, useCallback } from 'react';
+import { View, Text, TouchableOpacity, FlatList, StyleSheet, RefreshControl, ActivityIndicator, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { api } from '../../utils/api';
 import { Colors } from '../../utils/colors';
-
-interface Bill {
-  bill_id: string;
-  title: string;
-  currency: string;
-  total_amount: number;
-  status: string;
-  participants: any[];
-  created_at: string;
-}
+import { BillSummary } from '../../repositories/billRepository';
+import { useBillsViewModel } from '../../viewmodels/useBillsViewModel';
 
 export default function BillsScreen() {
   const router = useRouter();
-  const [bills, setBills] = useState<Bill[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const { bills, loading, refreshing, error, loadBills, refreshBills } = useBillsViewModel();
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'settled'>('all');
-
-  const loadBills = useCallback(async () => {
-    try {
-      const data = await api.getBills();
-      setBills(data.bills || data);
-    } catch (err) {
-      console.error('Failed to load bills:', err);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
-
-  useEffect(() => { loadBills(); }, [loadBills]);
 
   useFocusEffect(
     useCallback(() => {
@@ -45,11 +20,14 @@ export default function BillsScreen() {
     }, [loadBills])
   );
 
-  const filteredBills = bills.filter((b) => {
-    const matchSearch = b.title.toLowerCase().includes(search.toLowerCase());
-    const matchFilter = filter === 'all' || b.status === filter;
-    return matchSearch && matchFilter;
-  });
+  const filteredBills = useMemo(
+    () => bills.filter((b) => {
+      const matchSearch = b.title.toLowerCase().includes(search.toLowerCase());
+      const matchFilter = filter === 'all' || b.status === filter;
+      return matchSearch && matchFilter;
+    }),
+    [bills, search, filter]
+  );
 
   const getStatusColor = (status: string) => {
     if (status === 'settled') return Colors.success;
@@ -66,6 +44,60 @@ export default function BillsScreen() {
       </SafeAreaView>
     );
   }
+
+  if (error && bills.length === 0) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.emptyState}>
+          <Ionicons name="alert-circle-outline" size={48} color={Colors.error} />
+          <Text style={styles.emptyText}>Failed to load bills</Text>
+          <Text style={styles.emptySubText}>{error}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={refreshBills}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const renderItem = ({ item: bill }: { item: BillSummary }) => (
+    <TouchableOpacity
+      key={bill.bill_id}
+      testID={`bill-item-${bill.bill_id}`}
+      style={styles.billCard}
+      onPress={() => router.push(`/bill/${bill.bill_id}`)}
+      activeOpacity={0.7}
+    >
+      <View style={styles.billRow}>
+        <View style={[styles.statusBadge, { backgroundColor: getStatusColor(bill.status) + '20' }]}> 
+          <Ionicons
+            name={bill.status === 'settled' ? 'checkmark-circle' : 'time-outline'}
+            size={20}
+            color={getStatusColor(bill.status)}
+          />
+        </View>
+        <View style={styles.billInfo}>
+          <Text style={styles.billTitle} numberOfLines={1}>{bill.title}</Text>
+          <Text style={styles.billMeta}>
+            {bill.participants?.length || 0} people · {new Date(bill.created_at).toLocaleDateString()}
+          </Text>
+        </View>
+        <View style={styles.billRight}>
+          <Text style={styles.billAmount}>{bill.currency} {(bill.total_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+          <View style={[styles.statusTag, { backgroundColor: getStatusColor(bill.status) + '20' }]}> 
+            <Text style={[styles.statusTagText, { color: getStatusColor(bill.status) }]}>{bill.status}</Text>
+          </View>
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+
+  const renderEmpty = () => (
+    <View style={styles.emptyState}>
+      <Ionicons name="receipt-outline" size={48} color={Colors.muted} />
+      <Text style={styles.emptyText}>{search ? 'No bills found' : 'No bills yet'}</Text>
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
@@ -103,51 +135,15 @@ export default function BillsScreen() {
         ))}
       </View>
 
-      <ScrollView
-        style={styles.scrollView}
+      <FlatList
+        data={filteredBills}
+        keyExtractor={(item) => item.bill_id}
+        renderItem={renderItem}
+        ListEmptyComponent={renderEmpty}
         contentContainerStyle={styles.scrollContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadBills(); }} tintColor={Colors.primary} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshBills} tintColor={Colors.primary} />}
         showsVerticalScrollIndicator={false}
-      >
-        {filteredBills.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Ionicons name="receipt-outline" size={48} color={Colors.muted} />
-            <Text style={styles.emptyText}>{search ? 'No bills found' : 'No bills yet'}</Text>
-          </View>
-        ) : (
-          filteredBills.map((bill) => (
-            <TouchableOpacity
-              key={bill.bill_id}
-              testID={`bill-item-${bill.bill_id}`}
-              style={styles.billCard}
-              onPress={() => router.push(`/bill/${bill.bill_id}`)}
-              activeOpacity={0.7}
-            >
-              <View style={styles.billRow}>
-                <View style={[styles.statusBadge, { backgroundColor: getStatusColor(bill.status) + '20' }]}>
-                  <Ionicons
-                    name={bill.status === 'settled' ? 'checkmark-circle' : 'time-outline'}
-                    size={20}
-                    color={getStatusColor(bill.status)}
-                  />
-                </View>
-                <View style={styles.billInfo}>
-                  <Text style={styles.billTitle} numberOfLines={1}>{bill.title}</Text>
-                  <Text style={styles.billMeta}>
-                    {bill.participants?.length || 0} people · {new Date(bill.created_at).toLocaleDateString()}
-                  </Text>
-                </View>
-                <View style={styles.billRight}>
-                  <Text style={styles.billAmount}>{bill.currency} {(bill.total_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-                  <View style={[styles.statusTag, { backgroundColor: getStatusColor(bill.status) + '20' }]}>
-                    <Text style={[styles.statusTagText, { color: getStatusColor(bill.status) }]}>{bill.status}</Text>
-                  </View>
-                </View>
-              </View>
-            </TouchableOpacity>
-          ))
-        )}
-      </ScrollView>
+      />
     </SafeAreaView>
   );
 }
@@ -169,6 +165,9 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: 24, paddingBottom: 100 },
   emptyState: { alignItems: 'center', paddingVertical: 48, gap: 12 },
   emptyText: { fontSize: 16, color: Colors.muted, fontWeight: '500' },
+  emptySubText: { fontSize: 13, color: Colors.textMuted, textAlign: 'center' },
+  retryButton: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10, backgroundColor: Colors.primary },
+  retryButtonText: { color: Colors.primaryForeground, fontWeight: '600' },
   billCard: { backgroundColor: Colors.surface, borderRadius: 20, padding: 20, marginBottom: 12, borderWidth: 1, borderColor: Colors.border },
   billRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   statusBadge: { width: 44, height: 44, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },

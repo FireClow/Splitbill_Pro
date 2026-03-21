@@ -1,5 +1,4 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
 import { API_CONFIG } from './config';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? API_CONFIG.baseURL;
@@ -15,10 +14,7 @@ interface AuthSessionResponse {
   user_id?: string;
 }
 
-interface ApiResponse<T = any> {
-  data?: T;
-  [key: string]: any;
-}
+let refreshSessionPromise: Promise<string | null> | null = null;
 
 export class ApiError extends Error {
   status: number;
@@ -60,10 +56,66 @@ export const removeToken = async (): Promise<void> => {
   }
 };
 
+const getOrCreateDeviceId = async (): Promise<string> => {
+  const existing = await AsyncStorage.getItem('device_id');
+  if (existing) {
+    return existing;
+  }
+
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).slice(2, 10);
+  const deviceId = `device_${timestamp}_${random}`;
+  await AsyncStorage.setItem('device_id', deviceId);
+  return deviceId;
+};
+
+const refreshSessionToken = async (): Promise<string | null> => {
+  if (refreshSessionPromise) {
+    return refreshSessionPromise;
+  }
+
+  refreshSessionPromise = (async () => {
+    if (!BACKEND_URL) {
+      return null;
+    }
+
+    try {
+      const sessionId = await getOrCreateDeviceId();
+      const response = await fetch(`${BACKEND_URL}/api/auth/session`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ session_id: sessionId }),
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const result = (await response.json()) as AuthSessionResponse;
+      if (!result.session_token) {
+        return null;
+      }
+
+      await setToken(result.session_token);
+      return result.session_token;
+    } catch {
+      return null;
+    } finally {
+      refreshSessionPromise = null;
+    }
+  })();
+
+  return refreshSessionPromise;
+};
+
 // Core API fetch function with error handling
 const apiFetch = async <T = any>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  hasRetried = false
 ): Promise<T> => {
   try {
     if (!BACKEND_URL) {
@@ -92,6 +144,12 @@ const apiFetch = async <T = any>(
     // Handle 401 Unauthorized
     if (response.status === 401) {
       await removeToken();
+      if (!hasRetried && path !== '/auth/session') {
+        const refreshedToken = await refreshSessionToken();
+        if (refreshedToken) {
+          return apiFetch<T>(path, options, true);
+        }
+      }
       throw new ApiError('Unauthorized - session expired', 401);
     }
 

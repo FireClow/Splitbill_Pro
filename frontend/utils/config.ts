@@ -6,12 +6,10 @@ import { Platform } from 'react-native';
  * - Production: Uses deployed API endpoint
  */
 
-// Development IP - change this if your laptop IP changes
-const DEV_API_IP = '192.168.1.3';
 const DEV_API_PORT = 8000;
-
-// Production API endpoint
-const PROD_API_URL = 'https://api.splitbill.com';
+const DEFAULT_LOCAL_WEB_HOST = '127.0.0.1';
+const DEFAULT_LOCAL_NATIVE_HOST = '10.0.2.2';
+const EXPO_BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 // Environment detection
 const isDevelopment = __DEV__;
@@ -19,18 +17,20 @@ const isDevelopment = __DEV__;
 // Determine the correct host based on platform
 const getDevApiHost = () => {
   if (Platform.OS === 'web') {
-    // For web browser, always use localhost
-    return 'localhost';
+    return DEFAULT_LOCAL_WEB_HOST;
   }
-  // For mobile (Expo Go), use network IP
-  return DEV_API_IP;
+
+  // Android emulator can access host machine via 10.0.2.2.
+  return DEFAULT_LOCAL_NATIVE_HOST;
+};
+
+const getFallbackBaseUrl = (): string => {
+  return `http://${getDevApiHost()}:${DEV_API_PORT}`;
 };
 
 export const API_CONFIG = {
   // Base URL for API calls
-  baseURL: isDevelopment 
-    ? `http://${getDevApiHost()}:${DEV_API_PORT}`
-    : PROD_API_URL,
+  baseURL: EXPO_BACKEND_URL || getFallbackBaseUrl(),
 
   // API endpoints
   endpoints: {

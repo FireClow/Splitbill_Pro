@@ -13,6 +13,7 @@
  */
 
 import { Platform } from 'react-native';
+import { logger } from './logger';
 
 // Note: react-native-google-mobile-ads provides BannerAdSize and InterstitialAd
 // These are imported and configured in BannerAd.tsx and interstitial setup
@@ -53,7 +54,7 @@ export const getAdMobId = (adType: 'banner' | 'interstitial'): string => {
  */
 export const shouldShowAds = (config: AdConfig): boolean => {
   // Ads only in production, and only if user is not premium
-  return config.isProduction && !config.isPremiumUser && config.isEnabled;
+  return Platform.OS !== 'web' && config.isProduction && !config.isPremiumUser && config.isEnabled;
 };
 
 /**
@@ -93,6 +94,9 @@ export class InterstitialAdManager {
 
   constructor() {
     this.adUnitId = getAdMobId('interstitial');
+    if (Platform.OS === 'web') {
+      return;
+    }
     this.loadAd();
   }
 
@@ -100,12 +104,16 @@ export class InterstitialAdManager {
    * Load interstitial ad
    */
   private loadAd(): void {
+    if (Platform.OS === 'web') {
+      return;
+    }
+
     try {
       // Get InterstitialAd from react-native-google-mobile-ads
       const InterstitialAd = (globalThis as any).InterstitialAd;
       
       if (!InterstitialAd) {
-        console.log('[AdService] InterstitialAd not available - react-native-google-mobile-ads not initialized');
+        logger.warn('AdService', 'InterstitialAd not available - react-native-google-mobile-ads not initialized');
         return;
       }
       
@@ -115,11 +123,11 @@ export class InterstitialAdManager {
       this.interstitialAd
         .addAdEventListener('adLoaded', () => {
           this.isLoaded = true;
-          console.log('[AdService] Interstitial ad loaded');
+          logger.log('AdService', 'Interstitial ad loaded');
         })
         .addAdEventListener('adFailedToLoad', () => {
           this.isLoaded = false;
-          console.log('[AdService] Interstitial ad error, retrying...');
+          logger.warn('AdService', 'Interstitial ad error, retrying...');
           setTimeout(() => this.loadAd(), 2000);
         })
         .addAdEventListener('adOpened', () => {
@@ -134,7 +142,7 @@ export class InterstitialAdManager {
       // Load the ad
       this.interstitialAd.load();
     } catch (error) {
-      console.log('[AdService] Interstitial creation error:', error);
+      logger.warn('AdService', 'Interstitial creation error', error);
     }
   }
 
@@ -143,7 +151,7 @@ export class InterstitialAdManager {
    */
   public async trackBillCreation(): Promise<void> {
     this.billCreationCount++;
-    console.log(`[AdService] Bill created (${this.billCreationCount}/${this.showFrequency})`);
+    logger.log('AdService', `Bill created (${this.billCreationCount}/${this.showFrequency})`);
 
     if (this.billCreationCount >= this.showFrequency) {
       await this.show();
@@ -155,7 +163,7 @@ export class InterstitialAdManager {
    */
   public async show(): Promise<void> {
     if (!this.isLoaded || this.isShowing) {
-      console.log('[AdService] Interstitial ad not ready');
+      logger.log('AdService', 'Interstitial ad not ready');
       return;
     }
 
@@ -164,7 +172,7 @@ export class InterstitialAdManager {
         this.interstitialAd.show();
       }
     } catch (error) {
-      console.log('[AdService] Interstitial show error:', error);
+      logger.warn('AdService', 'Interstitial show error', error);
       this.resetFrequency(); // Still reset on error
     }
   }
@@ -174,7 +182,7 @@ export class InterstitialAdManager {
    */
   private resetFrequency(): void {
     this.billCreationCount = 0;
-    console.log('[AdService] Frequency counter reset');
+    logger.log('AdService', 'Frequency counter reset');
   }
 
   /**
