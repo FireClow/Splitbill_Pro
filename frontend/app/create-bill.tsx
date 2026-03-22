@@ -1,12 +1,11 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, TextInput, Alert, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { api, ApiError } from '../utils/api';
+import { ApiError } from '../utils/api';
 import { Colors } from '../utils/colors';
-import { useAuth } from '../contexts/AuthContext';
-import { useInterstitialAd } from '../hooks/useInterstitialAd';
+import { mvpBillUseCases } from '../domain/usecases/mvpBillUseCases';
 import { ItemAssignmentEditor } from '../components/ItemAssignmentEditor';
 import {
   applyClampedAssignment,
@@ -44,11 +43,11 @@ const createId = (prefix: string): string => {
 export default function CreateBillScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const { user } = useAuth();
-  const { trackBillCreation } = useInterstitialAd(user?.isPremium);
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
   const [createBlockedReason, setCreateBlockedReason] = useState('');
+  const [showSuccessFeedback, setShowSuccessFeedback] = useState(false);
+  const submitLockRef = useRef(false);
 
   const [title, setTitle] = useState('');
   const [currency, setCurrency] = useState('USD');
@@ -319,6 +318,10 @@ export default function CreateBillScreen() {
   }, [items, participants]);
 
   const handleSave = async () => {
+    if (submitLockRef.current) {
+      return;
+    }
+
     if (createBlockedReason) {
       Alert.alert('Create Blocked', createBlockedReason);
       return;
@@ -343,6 +346,7 @@ export default function CreateBillScreen() {
       }
     }
 
+    submitLockRef.current = true;
     setSaving(true);
     try {
       const billData = {
@@ -367,9 +371,9 @@ export default function CreateBillScreen() {
         // Product decision: keep create-bill simple, always split by item.
         split_method: 'per_item',
       };
-      const result = await api.createBill(billData);
-      // Track this bill creation for ad frequency
-      await trackBillCreation();
+      const result = await mvpBillUseCases.createBill(billData);
+      setShowSuccessFeedback(true);
+      await new Promise((resolve) => setTimeout(resolve, 450));
       router.replace(`/bill/${result.bill_id}`);
     } catch (err: any) {
       if (err instanceof ApiError && err.status === 403 && err.message.includes('Active bill limit reached')) {
@@ -380,6 +384,7 @@ export default function CreateBillScreen() {
       }
       Alert.alert('Error', err.message || 'Failed to create bill');
     } finally {
+      submitLockRef.current = false;
       setSaving(false);
     }
   };
@@ -395,7 +400,7 @@ export default function CreateBillScreen() {
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <View style={styles.topBar}>
-          <TouchableOpacity testID="close-create-bill" onPress={() => router.back()} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <TouchableOpacity testID="close-create-bill" onPress={() => router.back()} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} disabled={saving}>
             <Ionicons name="close" size={28} color={Colors.white} />
           </TouchableOpacity>
           <Text style={styles.topBarTitle}>New Bill</Text>
@@ -642,6 +647,12 @@ export default function CreateBillScreen() {
         </ScrollView>
 
         <View style={styles.bottomBar}>
+          {showSuccessFeedback && (
+            <View style={styles.successBox}>
+              <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
+              <Text style={styles.successText}>Bill created. Redirecting...</Text>
+            </View>
+          )}
           {stepError && (
             <View style={styles.errorBox}>
               <Ionicons name="alert-circle" size={18} color={Colors.error} />
@@ -649,7 +660,7 @@ export default function CreateBillScreen() {
             </View>
           )}
           {step > 0 && (
-            <TouchableOpacity testID="prev-step-btn" style={styles.prevBtn} onPress={() => setStep(step - 1)}>
+            <TouchableOpacity testID="prev-step-btn" style={styles.prevBtn} onPress={() => setStep(step - 1)} disabled={saving}>
               <Ionicons name="arrow-back" size={20} color={Colors.white} />
               <Text style={styles.prevBtnText}>Back</Text>
             </TouchableOpacity>
@@ -757,6 +768,8 @@ const styles = StyleSheet.create({
   nextBtnTextDisabled: { opacity: 0.6 },
   errorBox: { flexDirection: 'row', gap: 8, padding: 12, backgroundColor: Colors.error + '15', borderRadius: 8, marginBottom: 12, alignItems: 'center' },
   errorText: { fontSize: 14, color: Colors.error, flex: 1 },
+  successBox: { flexDirection: 'row', gap: 8, padding: 12, backgroundColor: Colors.success + '15', borderRadius: 8, marginBottom: 12, alignItems: 'center' },
+  successText: { fontSize: 14, color: Colors.success, flex: 1, fontWeight: '600' },
   subtitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 12 },
   statusBadge: { flexDirection: 'row', gap: 6, alignItems: 'center', backgroundColor: Colors.success + '15', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
   statusText: { fontSize: 12, color: Colors.success, fontWeight: '600' },

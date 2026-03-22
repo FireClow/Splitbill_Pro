@@ -1,19 +1,33 @@
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Platform, Linking, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { Colors } from '../utils/colors';
+import { LEGAL_LINKS } from '../constants/legalLinks';
 
 export default function LoginScreen() {
   const router = useRouter();
   const { login } = useAuth();
 
-  const handleGoogleLogin = async () => {
+  const handleGuestContinue = async () => {
     const platformPrefix = Platform.OS === 'web' ? 'web' : 'mobile';
     const sessionId = `${platformPrefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     await login(sessionId);
     router.replace('/(tabs)/home');
+  };
+
+  const openLegalLink = async (url: string, label: string): Promise<void> => {
+    try {
+      const canOpen = await Linking.canOpenURL(url);
+      if (!canOpen) {
+        Alert.alert('Unavailable', `${label} link is not available right now.`);
+        return;
+      }
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert('Unavailable', `${label} link is not available right now.`);
+    }
   };
 
   return (
@@ -25,15 +39,14 @@ export default function LoginScreen() {
           </View>
           <Text style={styles.title}>SplitBill</Text>
           <Text style={styles.titleAccent}>Pro</Text>
-          <Text style={styles.subtitle}>Split expenses effortlessly.{'\n'}Track payments in real-time.</Text>
+          <Text style={styles.subtitle}>Scan receipts quickly.{"\n"}Split bills and save local history.</Text>
         </View>
 
         <View style={styles.features}>
           {[
-            { icon: 'calculator-outline' as const, text: 'Smart split calculations' },
-            { icon: 'people-outline' as const, text: 'Multi-participant bills' },
-            { icon: 'globe-outline' as const, text: 'Multi-currency support' },
-            { icon: 'share-outline' as const, text: 'Instant bill sharing' },
+            { icon: 'scan-outline' as const, text: 'OCR receipt scanning' },
+            { icon: 'calculator-outline' as const, text: 'Split bill calculation' },
+            { icon: 'save-outline' as const, text: 'Local transaction history' },
           ].map((f, i) => (
             <View key={i} style={styles.featureRow}>
               <View style={styles.featureIcon}>
@@ -46,17 +59,24 @@ export default function LoginScreen() {
 
         <View style={styles.authSection}>
           <TouchableOpacity
-            testID="google-login-btn"
+            testID="guest-login-btn"
             style={styles.googleButton}
-            onPress={handleGoogleLogin}
+            onPress={handleGuestContinue}
             activeOpacity={0.8}
           >
-            <Ionicons name="logo-google" size={22} color="#000" />
-            <Text style={styles.googleButtonText}>Continue with Google</Text>
+            <Ionicons name="person-outline" size={22} color="#000" />
+            <Text style={styles.googleButtonText}>Continue as Guest</Text>
           </TouchableOpacity>
-          <Text style={styles.disclaimer}>
-            By continuing, you agree to our Terms of Service and Privacy Policy
-          </Text>
+          <View style={styles.disclaimerRow}>
+            <Text style={styles.disclaimer}>By continuing, you agree to our </Text>
+            <TouchableOpacity onPress={() => openLegalLink(LEGAL_LINKS.termsOfService, 'Terms of Service')}>
+              <Text style={styles.disclaimerLink}>Terms of Service</Text>
+            </TouchableOpacity>
+            <Text style={styles.disclaimer}> and </Text>
+            <TouchableOpacity onPress={() => openLegalLink(LEGAL_LINKS.privacyPolicy, 'Privacy Policy')}>
+              <Text style={styles.disclaimerLink}>Privacy Policy</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     </SafeAreaView>
@@ -155,6 +175,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: Colors.muted,
     textAlign: 'center',
+    lineHeight: 18,
+  },
+  disclaimerRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  disclaimerLink: {
+    fontSize: 13,
+    color: Colors.primary,
+    textDecorationLine: 'underline',
     lineHeight: 18,
   },
 });

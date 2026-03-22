@@ -1,0 +1,93 @@
+﻿{
+    "timestamp":  "2026-03-22T09:27:31.8488204+09:00",
+    "mode":  "deep",
+    "actions":  [
+
+                ],
+    "services":  {
+                     "backend":  {
+                                     "running":  true,
+                                     "port":  8000,
+                                     "listen":  {
+                                                    "localAddress":  "127.0.0.1",
+                                                    "localPort":  8000,
+                                                    "pid":  45644
+                                                }
+                                 },
+                     "frontend":  {
+                                      "running":  true,
+                                      "port":  8081,
+                                      "listen":  {
+                                                     "localAddress":  "::",
+                                                     "localPort":  8081,
+                                                     "pid":  19756
+                                                 }
+                                  },
+                     "mongo":  {
+                                   "running":  true,
+                                   "port":  27017,
+                                   "listen":  {
+                                                  "localAddress":  "127.0.0.1",
+                                                  "localPort":  27017,
+                                                  "pid":  6044
+                                              }
+                               },
+                     "redis":  {
+                                   "running":  false,
+                                   "port":  6379,
+                                   "listen":  null
+                               }
+                 },
+    "checks":  {
+                   "env":  {
+                               "backendEnvExists":  true,
+                               "backendEnvExampleExists":  true
+                           },
+                   "backendHealth":  {
+                                         "ok":  true,
+                                         "statusCode":  200,
+                                         "latencyMs":  100.42,
+                                         "parsed":  {
+                                                        "status":  "ok",
+                                                        "service":  "SplitBill Pro API",
+                                                        "version":  "2.0.0",
+                                                        "environment":  "production-ready",
+                                                        "ocr":  {
+                                                                    "available":  true,
+                                                                    "version":  null,
+                                                                    "binary":  null
+                                                                }
+                                                    },
+                                         "error":  null
+                                     },
+                   "frontendHome":  {
+                                        "ok":  true,
+                                        "statusCode":  200,
+                                        "latencyMs":  1685.25,
+                                        "error":  null
+                                    },
+                   "deep":  {
+                                "frontendLint":  {
+                                                     "ok":  true,
+                                                     "exitCode":  0,
+                                                     "outputTail":  "\u003e frontend@1.0.0 lint\r\n\u003e expo lint\r\n\r\nenv: load .env\r\nenv: export EXPO_PUBLIC_BACKEND_URL"
+                                                 },
+                                "backendPipCheck":  {
+                                                        "ok":  true,
+                                                        "exitCode":  0,
+                                                        "outputTail":  "No broken requirements found."
+                                                    }
+                            }
+               },
+    "issues":  [
+                   "Redis is not listening on port 6379 (optional unless enabled by your setup)"
+               ],
+    "summary":  {
+                    "overall":  "needs-attention",
+                    "backend":  "running",
+                    "frontend":  "running",
+                    "mongo":  "running",
+                    "redis":  "down",
+                    "issuesCount":  1
+                }
+}

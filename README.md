@@ -13,6 +13,25 @@ Advanced OCR-based receipt processing system with simplified preprocessing pipel
 ## Setup
 See deployment guide for full instructions.
 
+## Android Release Preflight
+Run one command before production build/submission to catch common release blockers:
+
+```powershell
+./scripts/release-preflight.ps1
+```
+
+What it validates:
+- Frontend release env variables (`EXPO_PUBLIC_BACKEND_URL`, `EXPO_PUBLIC_PRIVACY_POLICY_URL`, `EXPO_PUBLIC_TERMS_URL`)
+- Frontend lint
+- Local backend health endpoint (`http://127.0.0.1:8000/api/health`)
+
+Optional flags:
+
+```powershell
+./scripts/release-preflight.ps1 -SkipLint
+./scripts/release-preflight.ps1 -SkipRuntimeChecks
+```
+
 ## OCR For Real Receipt Photos (Recommended)
 For real phone-camera receipt photos, use hybrid OCR mode:
 

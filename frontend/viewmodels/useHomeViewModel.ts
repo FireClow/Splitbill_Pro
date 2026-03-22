@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BillRepository, BillSummary, DashboardStats } from '../repositories/billRepository';
+import { useCallback, useMemo, useState } from 'react';
+import { BillSummary, DashboardStats } from '../repositories/billRepository';
+import { mvpBillUseCases } from '../domain/usecases/mvpBillUseCases';
 
 export const useHomeViewModel = () => {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -12,8 +13,8 @@ export const useHomeViewModel = () => {
     try {
       setError(null);
       const [statsData, billsData] = await Promise.all([
-        BillRepository.fetchDashboardStats(),
-        BillRepository.fetchBills(),
+        mvpBillUseCases.loadDashboard(),
+        mvpBillUseCases.loadHistory(),
       ]);
       setStats(statsData);
       setBills(billsData);
@@ -28,10 +29,6 @@ export const useHomeViewModel = () => {
 
   const refresh = useCallback(() => {
     setRefreshing(true);
-    loadData();
-  }, [loadData]);
-
-  useEffect(() => {
     loadData();
   }, [loadData]);
 

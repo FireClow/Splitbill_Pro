@@ -66,3 +66,18 @@ Jika buka dari device lain, ganti `EXPO_PUBLIC_BACKEND_URL` ke IP LAN laptop, co
 ```env
 EXPO_PUBLIC_BACKEND_URL=http://192.168.1.10:8000
 ```
+
+## Release Android (safe)
+
+Sebelum build/submission produksi, pastikan environment variable ini sudah terisi dengan URL publik HTTPS:
+
+- `EXPO_PUBLIC_BACKEND_URL`
+- `EXPO_PUBLIC_PRIVACY_POLICY_URL`
+- `EXPO_PUBLIC_TERMS_URL`
+
+Jalankan command aman berikut agar proses gagal otomatis jika env belum valid:
+
+```bash
+npm run build:android:safe
+npm run submit:android:safe
+```

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
-import { BillRepository, BillSummary } from '../repositories/billRepository';
+import { useCallback, useState } from 'react';
+import { BillSummary } from '../repositories/billRepository';
+import { mvpBillUseCases } from '../domain/usecases/mvpBillUseCases';
 
 export const useBillsViewModel = () => {
   const [bills, setBills] = useState<BillSummary[]>([]);
@@ -10,7 +11,7 @@ export const useBillsViewModel = () => {
   const loadBills = useCallback(async () => {
     try {
       setError(null);
-      const data = await BillRepository.fetchBills();
+      const data = await mvpBillUseCases.loadHistory();
       setBills(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load bills';
@@ -23,10 +24,6 @@ export const useBillsViewModel = () => {
 
   const refreshBills = useCallback(() => {
     setRefreshing(true);
-    loadBills();
-  }, [loadBills]);
-
-  useEffect(() => {
     loadBills();
   }, [loadBills]);
 

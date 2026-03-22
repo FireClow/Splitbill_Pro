@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { api, setToken, removeToken } from '../utils/api';
+import { api, setToken, removeToken, ensureSessionToken } from '../utils/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface User {
@@ -29,13 +29,20 @@ const AuthContext = createContext<AuthContextType>({
 
 export const useAuth = () => useContext(AuthContext);
 
+const createGuestUser = (idSeed: string): User => ({
+  user_id: idSeed,
+  name: 'Guest User',
+  email: '',
+  isPremium: false,
+});
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   const checkAuth = useCallback(async () => {
     try {
-      const token = await AsyncStorage.getItem('session_token');
+      const token = await AsyncStorage.getItem('session_token') || await ensureSessionToken();
       if (!token) {
         setUser(null);
         setLoading(false);
@@ -52,17 +59,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const login = async (sessionId: string) => {
-    const result = await api.exchangeSession(sessionId);
-    if (result.session_token) {
-      await setToken(result.session_token);
-      // Create a default user object with premium flag
-      setUser({
-        user_id: result.user_id || sessionId,
-        name: 'User',
-        email: '',
-        isPremium: false, // Default: user starts as free tier
-      });
+    try {
+      const result = await api.exchangeSession(sessionId);
+      if (result.session_token) {
+        await setToken(result.session_token);
+        setUser(createGuestUser(result.user_id || sessionId));
+        return;
+      }
+    } catch {
+      // Fall back to local guest session when backend is unavailable.
     }
+
+    setUser(createGuestUser(sessionId));
   };
 
   const logout = async () => {

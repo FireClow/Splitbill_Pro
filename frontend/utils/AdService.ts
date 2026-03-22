@@ -14,6 +14,7 @@
 
 import { Platform } from 'react-native';
 import { logger } from './logger';
+import { MVP_FLAGS } from '../constants/mvpFlags';
 
 // Note: react-native-google-mobile-ads provides BannerAdSize and InterstitialAd
 // These are imported and configured in BannerAd.tsx and interstitial setup
@@ -53,6 +54,10 @@ export const getAdMobId = (adType: 'banner' | 'interstitial'): string => {
  * Check if ads should be shown
  */
 export const shouldShowAds = (config: AdConfig): boolean => {
+  if (!MVP_FLAGS.enableAds) {
+    return false;
+  }
+
   // Ads only in production, and only if user is not premium
   return Platform.OS !== 'web' && config.isProduction && !config.isPremiumUser && config.isEnabled;
 };

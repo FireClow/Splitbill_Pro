@@ -3,6 +3,7 @@ import { View, ActivityIndicator, StyleSheet, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import { Colors } from '../utils/colors';
+import { logger } from '../utils/logger';
 
 export default function AuthCallback() {
   const { login } = useAuth();
@@ -29,7 +30,7 @@ export default function AuthCallback() {
         await login(sessionId);
         router.replace('/(tabs)/home');
       } catch (err) {
-        console.error('Auth callback error:', err);
+        logger.warn('AuthCallback', 'Auth callback failed', err);
         router.replace('/login');
       }
     };

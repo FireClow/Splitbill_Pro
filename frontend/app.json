@@ -2,7 +2,7 @@
   "expo": {
     "name": "Split Bill",
     "slug": "split-bill",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/react-logo@3x.png",
     "scheme": "splitbill",
@@ -13,13 +13,13 @@
     },
     "android": {
       "package": "com.splitbill.app",
-      "versionCode": 1,
+      "versionCode": 2,
       "permissions": [
         "CAMERA",
         "READ_MEDIA_IMAGES"
       ],
       "adaptiveIcon": {
-            "foregroundImage": "./assets/images/react-logo@3x.png",
+        "foregroundImage": "./assets/images/react-logo@3x.png",
         "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true
@@ -32,28 +32,22 @@
     "plugins": [
       "expo-router",
       [
-        "react-native-google-mobile-ads",
-        {
-          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
-          "iosAppId": "ca-app-pub-3940256099942544~1458002511"
-        }
-      ],
-      [
         "expo-splash-screen",
         {
-                "image": "./assets/images/react-logo@3x.png",
+          "image": "./assets/images/react-logo@3x.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#000000"
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true
     },
     "extra": {
       "monetization": {
-        "adsEnabled": true,
+        "adsEnabled": false,
         "premiumEnabled": false,
         "iapEnabled": false
       },

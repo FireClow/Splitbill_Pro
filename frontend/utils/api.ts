@@ -1,7 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_CONFIG } from './config';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL ?? API_CONFIG.baseURL;
+const BACKEND_URL = API_CONFIG.baseURL;
+const REQUEST_TIMEOUT_MS = API_CONFIG.timeouts.default;
 
 // Type definitions
 interface ApiErrorResponse {
@@ -36,6 +37,15 @@ const getToken = async (): Promise<string | null> => {
     console.error('[API] Failed to retrieve token:', error);
     return null;
   }
+};
+
+export const ensureSessionToken = async (): Promise<string | null> => {
+  const existing = await getToken();
+  if (existing) {
+    return existing;
+  }
+
+  return refreshSessionToken();
 };
 
 export const setToken = async (token: string): Promise<void> => {
@@ -118,8 +128,8 @@ const apiFetch = async <T = any>(
   hasRetried = false
 ): Promise<T> => {
   try {
-    if (!BACKEND_URL) {
-      throw new ApiError('Backend URL not configured', 0);
+    if (!BACKEND_URL || !API_CONFIG.isBackendConfigured) {
+      throw new ApiError('Service is currently unavailable. Please try again later.', 0);
     }
 
     const token = await getToken();
@@ -133,13 +143,21 @@ const apiFetch = async <T = any>(
     }
 
     const url = `${BACKEND_URL}/api${path}`;
-    console.log(`[API] ${options.method || 'GET'} ${url}`);
 
-    const response = await fetch(url, {
-      ...options,
-      headers,
-      credentials: 'include',
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers,
+        credentials: 'include',
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     // Handle 401 Unauthorized
     if (response.status === 401) {
@@ -176,7 +194,12 @@ const apiFetch = async <T = any>(
       throw error;
     }
 
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    const isAbort = error instanceof Error && error.name === 'AbortError';
+    const message = isAbort
+      ? 'Request timed out. Please check your connection and try again.'
+      : error instanceof Error
+        ? error.message
+        : 'Unknown error';
     console.error('[API] Error:', message);
     throw new ApiError(message, 0, error);
   }
@@ -240,6 +263,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // TODO: Future feature (disabled for MVP)
   // Exchange Rates
   getExchangeRate: (base: string, target: string) =>
     apiFetch(`/exchange-rates?base=${base}&target=${target}`),
@@ -267,6 +291,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // TODO: Future feature (disabled for MVP)
   // Analytics
   getAnalyticsSummary: () => apiFetch('/analytics/summary'),
   getAnalyticsSpending: (month?: string) => apiFetch(`/analytics/spending${month ? `?month=${month}` : ''}`),

@@ -13,13 +13,10 @@ import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors } from '../../utils/colors';
-import { useAuth } from '../../contexts/AuthContext';
-import { BannerAd } from '../../components/BannerAd';
 import { useHomeViewModel } from '../../viewmodels/useHomeViewModel';
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { user } = useAuth();
   const { stats, recentBills, loading, refreshing, error, loadData, refresh } = useHomeViewModel();
 
   useFocusEffect(
@@ -211,8 +208,6 @@ export default function HomeScreen() {
       >
         <Ionicons name="add" size={28} color={Colors.primaryForeground} />
       </TouchableOpacity>
-
-      <BannerAd isPremium={user?.isPremium} />
     </SafeAreaView>
   );
 }

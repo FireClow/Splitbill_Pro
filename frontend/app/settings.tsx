@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { api } from '../utils/api';
 import { Colors } from '../utils/colors';
 import { useAuth } from '../contexts/AuthContext';
+import { MVP_FLAGS } from '../constants/mvpFlags';
 
 const CURRENCIES_DATA = [
   { code: 'USD', country: 'United States' },
@@ -52,13 +53,17 @@ const CURRENCIES_DATA = [
 export default function SettingsScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const currencyFeatureEnabled = MVP_FLAGS.enableCurrencyConverter;
   const [preferredCurrency, setPreferredCurrency] = useState(user?.preferred_currency || 'USD');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    if (!currencyFeatureEnabled) {
+      return;
+    }
     loadPreferences();
-  }, []);
+  }, [currencyFeatureEnabled]);
 
   const loadPreferences = async () => {
     try {
@@ -87,6 +92,23 @@ export default function SettingsScreen() {
       setSaving(false);
     }
   };
+
+  if (!currencyFeatureEnabled) {
+    // TODO: Future feature (disabled for MVP)
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <Ionicons name="construct-outline" size={48} color={Colors.warning} />
+          <Text style={{ color: Colors.white, marginTop: 12, fontSize: 16 }}>
+            Currency settings is temporarily disabled for MVP.
+          </Text>
+          <TouchableOpacity onPress={() => router.back()} style={[styles.backBtn, { marginTop: 16 }]}> 
+            <Ionicons name="chevron-back" size={24} color={Colors.white} />
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   if (loading) {
     return (

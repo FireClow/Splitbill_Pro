@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 
 /**
  * API Configuration
@@ -9,10 +10,27 @@ import { Platform } from 'react-native';
 const DEV_API_PORT = 8000;
 const DEFAULT_LOCAL_WEB_HOST = '127.0.0.1';
 const DEFAULT_LOCAL_NATIVE_HOST = '10.0.2.2';
-const EXPO_BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+const EXPO_BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL?.trim();
 
 // Environment detection
 const isDevelopment = __DEV__;
+
+const normalizeBaseUrl = (url: string): string => {
+  return url.replace(/\/$/, '');
+};
+
+const getExpoLanHost = (): string | null => {
+  const hostUri =
+    (Constants.expoConfig as any)?.hostUri ||
+    (Constants as any)?.manifest2?.extra?.expoClient?.hostUri ||
+    (Constants as any)?.manifest?.debuggerHost;
+
+  if (!hostUri || typeof hostUri !== 'string') {
+    return null;
+  }
+
+  return hostUri.split(':')[0] || null;
+};
 
 // Determine the correct host based on platform
 const getDevApiHost = () => {
@@ -20,17 +38,59 @@ const getDevApiHost = () => {
     return DEFAULT_LOCAL_WEB_HOST;
   }
 
+  const expoLanHost = getExpoLanHost();
+  if (expoLanHost) {
+    return expoLanHost;
+  }
+
   // Android emulator can access host machine via 10.0.2.2.
   return DEFAULT_LOCAL_NATIVE_HOST;
+};
+
+const rewriteLocalhostForNative = (url: string): string => {
+  if (Platform.OS === 'web') {
+    return url;
+  }
+
+  const expoLanHost = getExpoLanHost();
+  if (!expoLanHost) {
+    return url;
+  }
+
+  return url.replace(/(https?:\/\/)(localhost|127\.0\.0\.1)/i, `$1${expoLanHost}`);
 };
 
 const getFallbackBaseUrl = (): string => {
   return `http://${getDevApiHost()}:${DEV_API_PORT}`;
 };
 
+const resolveBaseUrl = (): string => {
+  if (EXPO_BACKEND_URL) {
+    const normalized = normalizeBaseUrl(EXPO_BACKEND_URL);
+    const rewritten = rewriteLocalhostForNative(normalized);
+
+    // Block local loopback endpoints in production builds.
+    if (!isDevelopment && /localhost|127\.0\.0\.1|10\.0\.2\.2/i.test(rewritten)) {
+      return '';
+    }
+
+    return rewritten;
+  }
+
+  // Development fallback keeps local iteration fast.
+  if (isDevelopment) {
+    return getFallbackBaseUrl();
+  }
+
+  // In production builds, force explicit backend URL configuration.
+  return '';
+};
+
+const resolvedBaseUrl = resolveBaseUrl();
+
 export const API_CONFIG = {
   // Base URL for API calls
-  baseURL: EXPO_BACKEND_URL || getFallbackBaseUrl(),
+  baseURL: resolvedBaseUrl,
 
   // API endpoints
   endpoints: {
@@ -64,6 +124,9 @@ export const API_CONFIG = {
 
   // Debug mode
   debug: isDevelopment,
+
+  // Runtime availability guard for API-dependent features.
+  isBackendConfigured: resolvedBaseUrl.length > 0,
 };
 
 /**
