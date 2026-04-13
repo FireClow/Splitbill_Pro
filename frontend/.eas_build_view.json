@@ -1,0 +1,50 @@
+﻿{
+  "id": "433ab40f-2cea-433a-8e75-22e85618993e",
+  "status": "ERRORED",
+  "platform": "ANDROID",
+  "error": {
+    "errorCode": "UNKNOWN_ERROR",
+    "message": "Unknown error. See logs of the Prebuild build phase for more information."
+  },
+  "artifacts": {},
+  "fingerprint": {
+    "id": "019d10f1-8a23-7101-9ad5-b2bb3821c6dc",
+    "hash": "9c0b4eec2ab11f03b26ea9a052afa2ee9284ae7f"
+  },
+  "initiatingActor": {
+    "id": "73cc7896-9060-4492-9e5d-3ed806fd8d32",
+    "displayName": "fireclow"
+  },
+  "logFiles": [
+    "https://job-logs.eascdn.net/production/433ab40f-2cea-433a-8e75-22e85618993e/1774109609756-d3985053-d8db-487c-bb06-e1889a7e1620.txt?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=www-production%40exponentjs.iam.gserviceaccount.com%2F20260321%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260321T161628Z&X-Goog-Expires=900&X-Goog-SignedHeaders=host&X-Goog-Signature=92fbcca628f03c7abd135d0bac1000d1fb1af0369e7268981fe917903f0e6b5710c64b4b0afd15401110bc35c0e8fef3b012d86063adff0016f3af7b87f00892afd57f151ee500190fa53e2d25a9ecb0ede777f68c3008719c426a696048544fbfa0755448a98455b8680d9496e5be2e0d5af5e406842e210f0042397675722bb20e3c992b79e3f1b7b954986af0ba0617b2b4c744a2763cbfb0531b1ac423010602a48b7225d3e2b6cdd92768b82be75faa9c25d42f406c9508cb556f4005ebd8b0002581e9ff8f9b0891825064570d5dff3e701ffee932d352506aa20240f3bc6f3848670dd81c690c8abde10c865e40c1fb0dfe0e5334eacd76aae1109864",
+    "https://job-logs.eascdn.net/production/433ab40f-2cea-433a-8e75-22e85618993e/1774109613775-9b6081a4-771d-4696-998b-c79704f51d3b.txt?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=www-production%40exponentjs.iam.gserviceaccount.com%2F20260321%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260321T161628Z&X-Goog-Expires=900&X-Goog-SignedHeaders=host&X-Goog-Signature=7a5fcc9d134e72514ab0e9eb7d1730041ca53a5102e89e472fecd80b650d06d384f0921248c4c62a47e260fb08156946a5849bc8ecd5d15681252021c3018871e0427f3228d38d8ef42f8c71a96c66d67a437445f82184e31e600e43f59ec6e67b6152d5c2b9ded772572bb2041f0939e48765b7265171668b6823bb3dbb5d1719552876e43e3a16d6bd38d23b281f36f8a643719920948e33585d9798403bdcc2a0bab0c878b7bccbfafa6cb097c8a6365ed1c47587131b1e47ebc03af3cc8f6ce41196631282bed3cc5c746c01c260cf072559ebd3b69dee19d8382f5fcafa9f83fb58d98b0cda93f574dc8c2f80209041bf065b3e28304a130c5408fb2785",
+    "https://job-logs.eascdn.net/production/433ab40f-2cea-433a-8e75-22e85618993e/1774109614037-42123563-abfe-4330-ab36-c11d599044f1.txt?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=www-production%40exponentjs.iam.gserviceaccount.com%2F20260321%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260321T161628Z&X-Goog-Expires=900&X-Goog-SignedHeaders=host&X-Goog-Signature=c4a00f4e8bbc28d71e29b2c2ea2bb9e840f9b4bbad8c774f8a1ff386603ea64f4da1c71ea6b73d08695f99f981ff556e38bba6ada52c063d0bcfeaf068aa44a122049c2632c34ddb43c644526389921f2c04955b326f7e8dd84e51c7cfa8a9900a4329e37076b867f13ce52447da4f9cc73363d4415c9b4926cbe6d1bd3b041880b90f659389f75a9da97c047aff53abe6cf29800a6cb04e4be212eac377cc38f1fe443f6e5ba9b4164a89d604b3fe158a8e5c07c6aa34a941670cda65fe3202cc1b44f88fd206f2f4462b3cf8a8c6a75f4469305b5671eb3437d9c2f8bdf7291b6cd4d91d37c63bfedfb5d16fdab172de9ab2a30bd480d170dc5e03c150e6d0",
+    "https://job-logs.eascdn.net/production/433ab40f-2cea-433a-8e75-22e85618993e/1774109614230-4d9a0d8d-ca29-425c-a87f-bd3307e8ddb5.txt?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=www-production%40exponentjs.iam.gserviceaccount.com%2F20260321%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20260321T161628Z&X-Goog-Expires=900&X-Goog-SignedHeaders=host&X-Goog-Signature=21ea62656920b95f8a59c3ba4d484422d0a046b29185cff1549167dc0594c41bd120e031c90dedc4d5e0b403de257723a6acfd971e1eac7ed2c7ab5449be3c29d023c59e80a0fb090b424fdc94cee7fcd20abd60ebb57637a249e35668466828c3ed281d79d8275dea902cbc95f8a4816ad9fbd9485fa26951f45746acd9d6e38049e83f393fb23e000cc42ac3d9f4476cded8dfb59d5004ceaaeaa45fd6c96195ca0c65bcedc3b8407e9b8f9e23ec7d5d5e1961640fa58dbd557352b27b45f8b5b054abf10eb47f52b8f008d2ea11ca7a11a6d622886ed9715a9257e597350d3a6c8017e750dbce5740928dd2ac280d8aa0e7dcd7d617b36a9bcd3d4b89b70a"
+  ],
+  "project": {
+    "id": "61579245-bad2-48dc-927e-36eddf669732",
+    "name": "split-bill",
+    "slug": "split-bill",
+    "ownerAccount": {
+      "id": "161760ae-97e8-499d-bb2c-78142480a4ed",
+      "name": "fireclow"
+    }
+  },
+  "distribution": "INTERNAL",
+  "buildProfile": "preview",
+  "sdkVersion": "54.0.0",
+  "appVersion": "1.0.0",
+  "appBuildVersion": "1",
+  "priority": "NORMAL",
+  "createdAt": "2026-03-21T16:13:29.509Z",
+  "updatedAt": "2026-03-21T16:14:54.210Z",
+  "completedAt": "2026-03-21T16:14:49.366Z",
+  "expirationDate": "2026-04-04T16:13:29.545Z",
+  "isForIosSimulator": false,
+  "metrics": {
+    "buildWaitTime": 118,
+    "buildQueueTime": 54450,
+    "buildDuration": 24972
+  }
+}
+

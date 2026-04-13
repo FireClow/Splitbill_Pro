@@ -10,8 +10,17 @@ Advanced OCR-based receipt processing system with simplified preprocessing pipel
 - **Confidence Scoring:** 5-metric quality evaluation system
 - **Status:** Production-ready, user-approved
 
+## Architecture
+- **Frontend:** Expo React Native app in `frontend/`
+- **Backend:** FastAPI service in `backend/`
+- **Database:** MongoDB
+
 ## Setup
 See deployment guide for full instructions.
+
+## Canonical Runtime Target
+- Primary implementation for active development is `frontend/` + `backend/` (Expo + FastAPI + MongoDB).
+- Deprecated MVP (`patungin-mvp`) has been removed to maintain a single source of truth.
 
 ## OCR For Real Receipt Photos (Recommended)
 For real phone-camera receipt photos, use hybrid OCR mode:

@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api } from '../../utils/api';
+import { API_CONFIG } from '../../utils/config';
 import { Colors } from '../../utils/colors';
 import { ItemAssignmentEditor } from '../../components/ItemAssignmentEditor';
 import {
@@ -91,7 +92,8 @@ export default function BillDetailScreen() {
     setShareLoading(true);
     try {
       const link = await api.createShareLink(id!);
-      const shareUrl = `${process.env.EXPO_PUBLIC_BACKEND_URL}/api/share/${link.token}`;
+      const shareBaseUrl = process.env.EXPO_PUBLIC_BACKEND_URL || API_CONFIG.baseURL;
+      const shareUrl = `${shareBaseUrl}/api/share/${link.token}`;
       if (Platform.OS === 'web') {
         const clipboard = (typeof navigator !== 'undefined' && (navigator as any).clipboard);
         if (clipboard?.writeText) {
@@ -402,10 +404,10 @@ export default function BillDetailScreen() {
             <Text style={styles.sectionTitle}>Split Breakdown</Text>
           </View>
           <View style={styles.splitMethodRow}>
-            {['equal', 'per_item'].map(m => (
+            {['equal', 'custom', 'per_item'].map(m => (
               <TouchableOpacity key={m} testID={`change-split-${m}`} style={[styles.splitMethodChip, bill.split_method === m && styles.splitMethodChipActive]} onPress={() => handleChangeSplitMethod(m)}>
                 <Text style={[styles.splitMethodChipText, bill.split_method === m && styles.splitMethodChipTextActive]}>
-                  {m === 'equal' ? 'Equal' : 'By Item'}
+                  {m === 'equal' ? 'Equal' : m === 'custom' ? 'Custom' : 'By Item'}
                 </Text>
               </TouchableOpacity>
             ))}

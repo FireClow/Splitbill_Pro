@@ -46,13 +46,16 @@ Buat file `.env` di folder `frontend/`:
 
 ```env
 # API
-EXPO_PUBLIC_API_URL=http://localhost:8001/api
-EXPO_PUBLIC_ENV=development
+EXPO_PUBLIC_BACKEND_URL=http://localhost:8001
 
-# AdMob (optional)
-EXPO_PUBLIC_ADMOB_APP_ID=ca-app-pub-xxxxxxxxxxxxxxxx~yyyyyyyyyy
-EXPO_PUBLIC_ADMOB_BANNER_ID=ca-app-pub-3940256099942544/2934735716
-EXPO_PUBLIC_ADMOB_INTERSTITIAL_ID=ca-app-pub-3940256099942544/1033173712
+# Public legal URLs (recommended)
+EXPO_PUBLIC_PRIVACY_POLICY_URL=https://your-domain.com/privacy-policy
+EXPO_PUBLIC_TERMS_URL=https://your-domain.com/terms-of-service
+
+# AdMob (optional for release)
+EXPO_PUBLIC_ADMOB_ANDROID_APP_ID=ca-app-pub-xxxxxxxxxxxxxxxx~yyyyyyyyyy
+EXPO_PUBLIC_ADMOB_ANDROID_BANNER_ID=ca-app-pub-3940256099942544/2934735716
+EXPO_PUBLIC_ADMOB_ANDROID_INTERSTITIAL_ID=ca-app-pub-3940256099942544/1033173712
 ```
 
 ## ▶️ Start Frontend
@@ -86,12 +89,7 @@ Scan QR code dengan Expo Go app di smartphone Anda.
 ## 🛠️ Build & Deploy
 
 ### Build for Web
-
-```powershell
-npm run build:web
-```
-
-Output akan ada di `build/` folder.
+Gunakan Expo export/build flow sesuai kebutuhan deployment web.
 
 ### Build for Android
 
@@ -144,10 +142,7 @@ npm run lint
 ```
 
 ### Format Code
-
-```powershell
-npm run format
-```
+Gunakan formatter/editor extension yang Anda pakai (script `format` belum tersedia di package.json).
 
 ## 📚 Project Teknologi
 

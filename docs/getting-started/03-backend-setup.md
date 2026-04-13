@@ -42,8 +42,8 @@ Buat file `.env` di folder `backend/`:
 
 ```env
 # Database
-MONGODB_URL=mongodb://localhost:27017
-DATABASE_NAME=splitbill
+MONGO_URL=mongodb://localhost:27017
+DB_NAME=splitbill
 
 # API
 API_HOST=0.0.0.0
@@ -53,11 +53,12 @@ API_PORT=8001
 ENV=development
 DEBUG=true
 
-# Security (generate dengan secrets.token_urlsafe(32))
-SECRET_KEY=your-secret-key-here
-
-# Optional: OCR
-TESSERACT_PATH=C:\\Program Files\\Tesseract-OCR\\tesseract.exe
+# OCR provider selection: auto | google_vision | tesseract
+OCR_PROVIDER=auto
+# Optional cloud OCR
+GOOGLE_VISION_API_KEY=
+# Optional explicit path
+TESSERACT_CMD=C:\\Program Files\\Tesseract-OCR\\tesseract.exe
 ```
 
 ## ▶️ Start Backend
@@ -129,8 +130,8 @@ python -c "import pymongo; print(pymongo.MongoClient('mongodb://localhost:27017'
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | GET | `/api/health` | Health check |
-| POST | `/api/auth/login` | User login |
-| POST | `/api/auth/register` | User registration |
+| POST | `/api/auth/session` | Session exchange |
+| GET | `/api/auth/me` | Current user profile |
 | GET | `/api/bills` | List user's bills |
 | POST | `/api/bills` | Create new bill |
 | GET | `/api/bills/{id}` | Get bill detail |
@@ -142,8 +143,8 @@ Lihat `/docs` untuk dokumentasi lengkap.
 
 **Port already in use?**
 ```powershell
-# Kill process on port 8001
-lsof -ti:8001 | xargs kill -9
+netstat -ano | findstr :8001
+taskkill /PID <PID> /F
 ```
 
 **MongoDB connection error?**

@@ -95,7 +95,7 @@ SplitBill Pro transforms the awkward "who owes what" moment into a seamless, pre
 2. **Architecture**: Modular, plugin-based design that allows rapid feature iteration
 3. **Data Advantage**: Aggregated spending patterns enable AI-powered insights
 4. **Multi-Currency**: Native support from day one, not bolted on
-5. **Security**: Enterprise-grade auth, audit logging, rate limiting from MVP
+5. **Security**: Enterprise-grade auth, audit logging, and production-grade rate limiting
 
 ## Growth Strategy
 

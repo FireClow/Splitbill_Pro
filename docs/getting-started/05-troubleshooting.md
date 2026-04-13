@@ -129,7 +129,7 @@ npm install
 Pastikan file `.env` ada di folder `frontend/`:
 
 ```env
-EXPO_PUBLIC_API_URL=http://localhost:8001/api
+EXPO_PUBLIC_BACKEND_URL=http://localhost:8001
 ```
 
 Kemudian restart Expo server:
@@ -153,13 +153,13 @@ Jika error, backend tidak running.
 
 **Cek API URL di `.env`:**
 ```env
-EXPO_PUBLIC_API_URL=http://localhost:8001/api
+EXPO_PUBLIC_BACKEND_URL=http://localhost:8001
 ```
 
 **Untuk mobile device (tidak localhost):**
 ```env
 # Ganti dengan IP address komputer
-EXPO_PUBLIC_API_URL=http://192.168.1.100:8001/api
+EXPO_PUBLIC_BACKEND_URL=http://192.168.1.100:8001
 ```
 
 Cari IP dengan:

@@ -64,6 +64,7 @@ export default function CreateBillScreen() {
   const [taxType, setTaxType] = useState<'percentage' | 'fixed'>('percentage');
   const [taxValue, setTaxValue] = useState('');
   const [serviceCharge, setServiceCharge] = useState('');
+  const [splitMethod, setSplitMethod] = useState<'equal' | 'per_item'>('per_item');
   const [ocrWarning, setOcrWarning] = useState<string>('');
 
   useEffect(() => {
@@ -365,7 +366,7 @@ export default function CreateBillScreen() {
         tax_value: parseFloat(taxValue) || 0,
         service_charge: parseFloat(serviceCharge) || 0,
         // Product decision: keep create-bill simple, always split by item.
-        split_method: 'per_item',
+        split_method: splitMethod,
       };
       const result = await api.createBill(billData);
       // Track this bill creation for ad frequency
@@ -625,17 +626,35 @@ export default function CreateBillScreen() {
                 <Text style={styles.reviewSmallValue}>{participants.map(p => p.name).join(', ')}</Text>
                 <View style={styles.reviewDivider} />
                 <Text style={styles.reviewLabel}>SPLIT METHOD</Text>
-                <Text style={styles.reviewSmallValue}>By Item</Text>
+                <Text style={styles.reviewSmallValue}>{splitMethod === 'equal' ? 'Equal' : 'By Item'}</Text>
+                <View style={styles.reviewDivider} />
+                <View style={styles.splitMethodRow}>
+                  {(['equal', 'per_item'] as const).map((method) => (
+                    <TouchableOpacity
+                      key={method}
+                      style={[styles.splitMethodChip, splitMethod === method && styles.splitMethodChipActive]}
+                      onPress={() => setSplitMethod(method)}
+                    >
+                      <Text style={[styles.splitMethodChipText, splitMethod === method && styles.splitMethodChipTextActive]}>
+                        {method === 'equal' ? 'Equal' : 'By Item'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
                 <View style={styles.reviewDivider} />
                 <Text style={styles.reviewLabel}>BY ITEM SHARES</Text>
-                {participants.map(p => (
-                  <View key={`share_${p.id}`} style={styles.reviewItem}>
-                    <Text style={styles.reviewSmallLabel}>{p.name}</Text>
-                    <Text style={styles.reviewSmallValue}>
-                      {currency} {formatCurrency(byItemShares[p.id] || 0)}
-                    </Text>
-                  </View>
-                ))}
+                {participants.map(p => {
+                  const equalShare = participants.length > 0 ? total / participants.length : 0;
+                  const shareValue = splitMethod === 'equal' ? equalShare : (byItemShares[p.id] || 0);
+                  return (
+                    <View key={`share_${p.id}`} style={styles.reviewItem}>
+                      <Text style={styles.reviewSmallLabel}>{p.name}</Text>
+                      <Text style={styles.reviewSmallValue}>
+                        {currency} {formatCurrency(shareValue)}
+                      </Text>
+                    </View>
+                  );
+                })}
               </View>
             </View>
           )}
@@ -737,6 +756,11 @@ const styles = StyleSheet.create({
   splitMethodActive: { borderBottomColor: Colors.primary + '30' },
   splitMethodText: { fontSize: 16, fontWeight: '500', color: Colors.muted },
   splitMethodTextActive: { color: Colors.white },
+  splitMethodRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  splitMethodChip: { flex: 1, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 100, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, alignItems: 'center' },
+  splitMethodChipActive: { backgroundColor: Colors.primary + '20', borderColor: Colors.primary },
+  splitMethodChipText: { fontSize: 14, fontWeight: '500', color: Colors.muted },
+  splitMethodChipTextActive: { color: Colors.primary },
   reviewCard: { backgroundColor: Colors.surface, borderRadius: 20, padding: 24, marginBottom: 16, borderWidth: 1, borderColor: Colors.border },
   reviewLabel: { fontSize: 12, fontWeight: '500', color: Colors.textMuted, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 4 },
   reviewValue: { fontSize: 18, fontWeight: '600', color: Colors.white },
