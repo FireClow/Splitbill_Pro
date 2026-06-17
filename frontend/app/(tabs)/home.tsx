@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,74 +12,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { api, ApiError } from '../../utils/api';
 import { Colors } from '../../utils/colors';
-import { useAuth } from '../../contexts/AuthContext';
-import { BannerAd } from '../../components/BannerAd';
-
-interface DashboardStats {
-  total_bills: number;
-  active_bills: number;
-  settled_bills: number;
-  total_amount: number;
-  outstanding: number;
-  total_paid: number;
-  currency?: string; // Preferred currency from user settings
-}
-
-interface Bill {
-  bill_id: string;
-  title: string;
-  currency: string;
-  total_amount: number;
-  status: string;
-  participants: any[];
-  splits: any[];
-  created_at: string;
-}
+import { useHomeViewModel } from '../../viewmodels/useHomeViewModel';
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { user } = useAuth();
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [recentBills, setRecentBills] = useState<Bill[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const loadData = useCallback(async (): Promise<void> => {
-    try {
-      setError(null);
-      const [statsData, billsData] = await Promise.all([
-        api.getDashboardStats(),
-        api.getBills(),
-      ]);
-
-      if (statsData) {
-        setStats(statsData);
-      }
-
-      if (Array.isArray(billsData)) {
-        setRecentBills(billsData.slice(0, 5));
-      } else if (billsData && Array.isArray(billsData.bills)) {
-        setRecentBills(billsData.bills.slice(0, 5));
-      }
-    } catch (err) {
-      const message =
-        (err instanceof ApiError && err.message) ||
-        (err instanceof Error && err.message) ||
-        'Failed to load dashboard';
-      setError(message);
-      console.error('[Home] Error loading data:', err);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  const { stats, recentBills, loading, refreshing, error, loadData, refresh } = useHomeViewModel();
 
   useFocusEffect(
     useCallback(() => {
@@ -87,10 +25,7 @@ export default function HomeScreen() {
     }, [loadData])
   );
 
-  const onRefresh = (): void => {
-    setRefreshing(true);
-    loadData();
-  };
+  const onRefresh = (): void => refresh();
 
   const getStatusColor = (status: string): string => {
     if (status === 'settled') return Colors.success;
@@ -273,8 +208,6 @@ export default function HomeScreen() {
       >
         <Ionicons name="add" size={28} color={Colors.primaryForeground} />
       </TouchableOpacity>
-
-      <BannerAd isPremium={user?.isPremium} />
     </SafeAreaView>
   );
 }

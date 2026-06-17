@@ -15,7 +15,7 @@ File ini sudah disiapkan:
 - `frontend/.env`
 
 ```env
-EXPO_PUBLIC_BACKEND_URL=http://localhost:8001
+EXPO_PUBLIC_BACKEND_URL=http://localhost:8000
 ```
 
 Backend menggunakan:
@@ -33,13 +33,13 @@ Masuk ke folder `backend`, lalu jalankan:
 
 ```bash
 pip install -r requirements.txt
-uvicorn server:app --host 0.0.0.0 --port 8001 --reload
+uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Validasi cepat:
 
 ```bash
-curl http://localhost:8001/api/health
+curl http://localhost:8000/api/health
 ```
 
 ## Jalankan Frontend Web (Terminal 2)
@@ -64,5 +64,20 @@ Expo akan membuka web lokal (umumnya `http://localhost:8081` atau port yang dita
 Jika buka dari device lain, ganti `EXPO_PUBLIC_BACKEND_URL` ke IP LAN laptop, contoh:
 
 ```env
-EXPO_PUBLIC_BACKEND_URL=http://192.168.1.10:8001
+EXPO_PUBLIC_BACKEND_URL=http://192.168.1.10:8000
+```
+
+## Release Android (safe)
+
+Sebelum build/submission produksi, pastikan environment variable ini sudah terisi dengan URL publik HTTPS:
+
+- `EXPO_PUBLIC_BACKEND_URL`
+- `EXPO_PUBLIC_PRIVACY_POLICY_URL`
+- `EXPO_PUBLIC_TERMS_URL`
+
+Jalankan command aman berikut agar proses gagal otomatis jika env belum valid:
+
+```bash
+npm run build:android:safe
+npm run submit:android:safe
 ```

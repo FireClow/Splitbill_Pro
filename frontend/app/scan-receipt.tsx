@@ -18,6 +18,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getOcrUrl } from '../utils/config';
 import { Colors } from '../utils/colors';
+import { logger } from '../utils/logger';
 
 interface ScannedReceipt {
   image_id: string;
@@ -100,12 +101,14 @@ export default function ScanReceiptScreen() {
   const [hasAutoOpenedSource, setHasAutoOpenedSource] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
-  const ensureBillTitle = useCallback(() => {
-    if (billTitle.trim()) {
-      return true;
+  const getBillTitleOrDefault = useCallback((): string => {
+    const explicitTitle = billTitle.trim();
+    if (explicitTitle) {
+      return explicitTitle;
     }
-    Alert.alert('Bill Name Required', 'Please enter a bill name before scanning receipt.');
-    return false;
+
+    const datePart = new Date().toISOString().slice(0, 10);
+    return `Scanned Receipt ${datePart}`;
   }, [billTitle]);
 
   // Request permissions on mount
@@ -122,7 +125,7 @@ export default function ScanReceiptScreen() {
       setLoading(true);
       setUploadProgress(5);
       setOcrError(null);
-      console.log('[OCR] Starting upload from:', imageUri);
+      logger.log('OCR', 'Starting receipt upload');
 
       const fileName = imageUri.split('/').pop() || 'receipt.jpg';
 
@@ -130,13 +133,12 @@ export default function ScanReceiptScreen() {
       try {
         const blobResponse = await fetch(imageUri);
         imageBlob = await blobResponse.blob();
-        console.log(`[OCR] Loaded blob directly, size=${imageBlob.size}`);
+        logger.log('OCR', 'Loaded image blob');
       } catch (blobError) {
-        console.warn('[OCR] Direct blob load failed, will fallback to base64 JSON:', blobError);
+        logger.warn('OCR', 'Direct blob load failed; falling back to base64', blobError);
       }
 
       // Send to backend
-      console.log(`[OCR] Sending request to: ${getOcrUrl('scan')}`);
 
       // Get proper session token from storage
       const sessionToken = await AsyncStorage.getItem('session_token');
@@ -144,7 +146,6 @@ export default function ScanReceiptScreen() {
         throw new Error('Session not ready. Please wait a moment and try again.');
       }
       const authHeader = `Bearer ${sessionToken}`;
-      console.log(`[OCR] Auth header: ${authHeader.substring(0, 20)}...`);
 
       let response: { status: number; ok: boolean; bodyText: string } | null = null;
       let previewImageUri = imageUri;
@@ -154,7 +155,7 @@ export default function ScanReceiptScreen() {
         const formData = new FormData();
         formData.append('file', imageBlob, fileName);
         setUploadProgress(20);
-        console.log(`[OCR] Multipart upload prepared, mime=${mimeType}, size=${imageBlob.size}`);
+        logger.log('OCR', 'Prepared multipart upload payload', { mimeType });
 
         response = await new Promise<{ status: number; ok: boolean; bodyText: string }>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
@@ -182,7 +183,7 @@ export default function ScanReceiptScreen() {
 
         // Fallback to base64 JSON for compatibility issues on some runtimes.
         if (!response.ok && (response.status === 400 || response.status === 415 || response.status === 422)) {
-          console.warn('[OCR] Multipart rejected, retrying with JSON base64 payload');
+          logger.warn('OCR', 'Multipart rejected; retrying with base64 JSON');
           response = null;
         }
       }
@@ -216,34 +217,29 @@ export default function ScanReceiptScreen() {
         };
       }
 
-      console.log(`[OCR] Response status: ${response.status}`);
-
       if (!response.ok) {
         let errorMsg = `HTTP ${response.status}`;
         try {
           const errorData = JSON.parse(response.bodyText) as any;
           errorMsg = formatOcrErrorMessage(errorData?.detail || errorData?.message || errorData);
-          console.error('[OCR] Backend error:', errorData);
+          logger.warn('OCR', 'Backend OCR response error payload', errorData);
         } catch (e) {
-          console.error('[OCR] Failed to parse error response:', e);
+          logger.warn('OCR', 'Failed to parse OCR error payload', e);
         }
         throw new Error(errorMsg);
       }
 
       const result = JSON.parse(response.bodyText) as ScannedReceipt;
       setUploadProgress(100);
-      console.log('[OCR] Upload successful! Receipt ID:', result.image_id);
-      console.log('[OCR] Upload time:', Date.now() - uploadStartTime, 'ms');
+      logger.log('OCR', 'Upload completed successfully', { durationMs: Date.now() - uploadStartTime });
 
       // Auto-navigate to Review screen immediately after successful upload
       if (result.image_id) {
-        console.log('[OCR] Navigating to review screen with receipt ID:', result.image_id);
-        console.log('[OCR] Scanned data items:', result.items?.length || 0);
+        logger.log('OCR', 'Navigating to review screen');
 
         // Clear loading before navigation
         // Navigate to review screen
         try {
-          console.log('[OCR] Calling router.replace...');
           router.replace({
             pathname: '/review-receipt',
             params: {
@@ -251,20 +247,19 @@ export default function ScanReceiptScreen() {
               scannedData: JSON.stringify({
                 ...result,
                 image_uri: previewImageUri,
-                bill_title: billTitle.trim(),
+                bill_title: getBillTitleOrDefault(),
               }),
             },
           });
-          console.log('[OCR] router.replace called successfully');
         } catch (navError) {
-          console.error('[OCR] Navigation error:', navError);
+          logger.error('OCR', 'Navigation to review screen failed', navError);
           Alert.alert('Navigation Error', 'Could not navigate to review screen');
         }
       } else {
         throw new Error('No receipt ID returned from server');
       }
     } catch (error: any) {
-      console.error('[OCR] Upload error:', error);
+      logger.error('OCR', 'Upload failed', error);
       const errorMsg = error instanceof Error ? error.message : String(error);
       setOcrError(errorMsg);
       Alert.alert(
@@ -275,14 +270,10 @@ export default function ScanReceiptScreen() {
       setLoading(false);
       setTimeout(() => setUploadProgress(0), 200);
     }
-  }, [billTitle, router]);
+  }, [getBillTitleOrDefault, router]);
 
   // Handle taking photo with camera
   const handleTakePhoto = useCallback(async () => {
-    if (!ensureBillTitle()) {
-      return;
-    }
-
     if (!cameraRef.current) return;
 
     try {
@@ -297,18 +288,14 @@ export default function ScanReceiptScreen() {
       }
     } catch (error) {
       Alert.alert('Error', 'Failed to take photo. Please try again.');
-      console.error('Camera error:', error);
+      logger.warn('OCR', 'Camera capture failed', error);
     } finally {
       setLoading(false);
     }
-  }, [ensureBillTitle, uploadAndScanReceipt]);
+  }, [uploadAndScanReceipt]);
 
   // Handle gallery image selection
   const handlePickImage = useCallback(async () => {
-    if (!ensureBillTitle()) {
-      return;
-    }
-
     try {
       setLoading(true);
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -323,30 +310,24 @@ export default function ScanReceiptScreen() {
       }
     } catch (error) {
       Alert.alert('Error', 'Failed to pick image. Please try again.');
-      console.error('Image picker error:', error);
+      logger.warn('OCR', 'Image picker failed', error);
     } finally {
       setLoading(false);
     }
-  }, [ensureBillTitle, uploadAndScanReceipt]);
+  }, [uploadAndScanReceipt]);
 
   useEffect(() => {
     if (hasAutoOpenedSource) return;
     if (params.source === 'camera') {
-      if (!ensureBillTitle()) {
-        return;
-      }
       setCameraMode('camera');
       setHasAutoOpenedSource(true);
       return;
     }
     if (params.source === 'gallery') {
-      if (!ensureBillTitle()) {
-        return;
-      }
       setHasAutoOpenedSource(true);
       handlePickImage();
     }
-  }, [params.source, hasAutoOpenedSource, handlePickImage, ensureBillTitle]);
+  }, [params.source, hasAutoOpenedSource, handlePickImage]);
 
   // Render camera view
   if (cameraMode === 'camera' && permission?.granted) {
@@ -356,7 +337,7 @@ export default function ScanReceiptScreen() {
           ref={cameraRef}
           style={styles.camera}
           facing="back"
-          onCameraReady={() => console.log('Camera ready')}
+          onCameraReady={() => logger.log('OCR', 'Camera ready')}
         >
           {/* Camera header */}
           <View style={styles.cameraHeader}>
@@ -456,7 +437,7 @@ export default function ScanReceiptScreen() {
           </View>
 
           <View style={styles.inputCard}>
-            <Text style={styles.inputLabel}>Bill Name</Text>
+            <Text style={styles.inputLabel}>Bill Name (optional)</Text>
             <TextInput
               testID="ocr-bill-title-input"
               style={styles.titleInput}
@@ -472,9 +453,6 @@ export default function ScanReceiptScreen() {
           <View style={styles.optionsContainer}>
             <TouchableOpacity
               onPress={() => {
-                if (!ensureBillTitle()) {
-                  return;
-                }
                 setCameraMode('camera');
               }}
               style={styles.optionButton}
@@ -511,7 +489,7 @@ export default function ScanReceiptScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              onPress={() => router.push({ pathname: '/create-bill', params: { prefillTitle: billTitle.trim() } })}
+              onPress={() => router.push({ pathname: '/create-bill', params: { prefillTitle: getBillTitleOrDefault() } })}
               style={styles.optionButton}
               activeOpacity={0.7}
             >

@@ -7,6 +7,10 @@ import socket
 import sys
 from pathlib import Path
 
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
 # Use an isolated backend URL for pytest runs unless explicitly overridden.
 DEFAULT_TEST_BASE_URL = os.environ.get('PYTEST_BACKEND_URL') or 'http://127.0.0.1:18001'
 os.environ['EXPO_PUBLIC_BACKEND_URL'] = DEFAULT_TEST_BASE_URL
@@ -24,7 +28,7 @@ def _is_port_open(host: str, port: int) -> bool:
 @pytest.fixture(scope="session", autouse=True)
 def ensure_backend_server():
     """Start local backend server when tests run without a pre-started API."""
-    backend_dir = Path(__file__).resolve().parent.parent
+    backend_dir = BACKEND_DIR
     host = "127.0.0.1"
     default_port = 18001
     base_url = os.environ.get('EXPO_PUBLIC_BACKEND_URL') or f'http://{host}:{default_port}'

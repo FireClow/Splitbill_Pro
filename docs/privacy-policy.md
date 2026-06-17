@@ -1,77 +1,56 @@
-# Privacy Policy - SplitBill Pro
+# Privacy Policy - SplitBill MVP
 
-**Last Updated:** February 2026
+**Last Updated:** March 2026
 
 ## 1. Information We Collect
 
-### Account Information
-- **Google Account Data**: When you sign in with Google, we receive your name, email address, and profile picture. We do not receive or store your Google password.
+### Guest Session Data
+- A generated device/session identifier is used to keep your app session active.
 
-### Bill Data
-- Bill titles, items, prices, and participant names you enter
-- Payment status and split calculations
-- Currency preferences
+### Bill and Receipt Data
+- Bill titles, items, quantities, prices, and participant names that you enter.
+- Receipt images and extracted text when you use OCR scan.
 
-### Usage Data
-- App usage patterns (screens visited, features used)
-- Device information (OS, app version)
-- Error logs for debugging
+### Technical Data
+- Basic app diagnostics used to troubleshoot failures (for example, request errors).
 
 ## 2. How We Use Your Information
 
-- **Core Service**: To create, manage, and share bills with your participants
-- **Calculations**: To perform accurate split calculations and currency conversions
-- **Communication**: To send bill sharing links and payment reminders
-- **Improvement**: To improve app functionality and fix bugs
+- Run core MVP features: OCR scanning, split calculations, and transaction history.
+- Sync data with backend services when available.
+- Improve app reliability and fix defects.
 
 ## 3. Data Sharing
 
-We do **NOT**:
-- Sell your personal data to third parties
-- Share your financial data with advertisers
-- Store payment card or bank account information
+We do **not** sell personal data.
 
-We **DO** share:
-- Bill details with participants you explicitly add to a bill
-- Public bill views via share links you generate (read-only)
+Data is shared only when required to deliver app functionality, such as:
+- Processing OCR and bill operations through our backend.
+- Showing bill data to participants you explicitly include.
 
 ## 4. Data Storage & Security
 
-- All data is encrypted in transit (HTTPS/TLS)
-- Passwords are hashed using industry-standard algorithms
-- Session tokens are cryptographically generated
-- MongoDB data is stored with proper access controls
-- Receipt images (when available) are encrypted at rest
+- Data in transit uses HTTPS/TLS where backend endpoints support it.
+- Local transaction history may be stored on-device.
+- Backend data access is restricted to authorized application services.
 
-## 5. Data Retention
+## 5. Ads and Tracking
 
-- **Active accounts**: Data retained while account is active
-- **Deleted accounts**: All personal data deleted within 30 days of account deletion request
-- **Share links**: Automatically expire after 72 hours
-- **Audit logs**: Retained for 90 days for security purposes
+- MVP release has ads disabled.
+- We do not run AdMob ad delivery in MVP mode.
 
 ## 6. Your Rights
 
-You have the right to:
-- **Access**: Request a copy of your data
-- **Delete**: Request deletion of your account and all associated data
-- **Export**: Download your bill data in standard formats
-- **Correct**: Update or correct your personal information
+You may request access, correction, export, or deletion of your backend-stored data by contacting us.
 
-## 7. Third-Party Services
+## 7. Children's Privacy
 
-- **Google OAuth**: For authentication (Google's Privacy Policy applies)
-- **Frankfurter API**: For exchange rates (no personal data shared)
-- **Sentry** (optional): For error monitoring (anonymized data only)
+This app is not directed to children under 13.
 
-## 8. Children's Privacy
+## 8. Changes to This Policy
 
-SplitBill Pro is not intended for children under 13. We do not knowingly collect data from children.
+We may update this policy and revise the "Last Updated" date.
 
-## 9. Changes to This Policy
-
-We will notify users of significant changes via in-app notification. Continued use constitutes acceptance.
-
-## 10. Contact
+## 9. Contact
 
 For privacy inquiries: privacy@splitbillpro.app

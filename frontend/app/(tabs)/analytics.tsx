@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { api, ApiError } from '../../utils/api';
 import { Colors } from '../../utils/colors';
+import { MVP_FLAGS } from '../../constants/mvpFlags';
 
 interface SpendingMonth {
   month: string;
@@ -35,6 +36,8 @@ interface AnalyticsSummary {
 }
 
 export default function AnalyticsScreen() {
+  const analyticsEnabled = MVP_FLAGS.enableAnalytics;
+
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [spending, setSpending] = useState<SpendingMonth[]>([]);
   const [currencies, setCurrencies] = useState<CurrencyData[]>([]);
@@ -90,8 +93,24 @@ export default function AnalyticsScreen() {
   }, [selectedMonth]);
 
   useEffect(() => {
+    if (!analyticsEnabled) {
+      setLoading(false);
+      return;
+    }
     loadData();
-  }, [loadData]);
+  }, [analyticsEnabled, loadData]);
+
+  if (!analyticsEnabled) {
+    // TODO: Future feature (disabled for MVP)
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.errorContainer}>
+          <Ionicons name="construct-outline" size={48} color={Colors.warning} />
+          <Text style={styles.errorText}>Analytics is temporarily disabled for MVP.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   const maxSpending = Math.max(
     ...(spending

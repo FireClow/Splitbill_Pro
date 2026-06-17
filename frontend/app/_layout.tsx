@@ -3,6 +3,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { api, ApiError, setToken } from '../utils/api';
+import { logger } from '../utils/logger';
 
 export default function RootLayout() {
   useEffect(() => {
@@ -17,7 +18,7 @@ export default function RootLayout() {
           const random = Math.random().toString(36).slice(2, 10);
           deviceId = `device_${timestamp}_${random}`;
           await AsyncStorage.setItem('device_id', deviceId);
-          console.log('[Auth] Generated new device ID:', deviceId);
+          logger.log('Auth', 'Generated new device ID');
         }
 
         // Exchange device ID for session token
@@ -25,15 +26,15 @@ export default function RootLayout() {
         
         if (result.session_token) {
           await setToken(result.session_token);
-          console.log('[Auth] Session token acquired successfully');
+          logger.log('Auth', 'Session token acquired successfully');
         } else {
-          console.warn('[Auth] No session token in response');
+          logger.warn('Auth', 'No session token in response');
         }
       } catch (error) {
         if (error instanceof ApiError) {
-          console.log('[Auth] Auto-auth failed [status:', error.status + ']:', error.message);
+          logger.warn('Auth', `Auto-auth failed [status: ${error.status}]: ${error.message}`);
         } else {
-          console.log('[Auth] Auto-auth failed:', error);
+          logger.warn('Auth', 'Auto-auth failed', error);
         }
         // App continues to work without auth (graceful degradation)
       }

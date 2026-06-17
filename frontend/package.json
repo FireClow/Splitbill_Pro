@@ -8,6 +8,12 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "validate:release-env": "node ./scripts/validate-release-env.mjs",
+    "build:android": "npx eas-cli build --platform android --profile production",
+    "build:android:safe": "npm run validate:release-env ; npx eas-cli build --platform android --profile production",
+    "build:android:preview": "npx eas-cli build --platform android --profile preview",
+    "submit:android": "npx eas-cli submit --platform android --profile production",
+    "submit:android:safe": "npm run validate:release-env ; npx eas-cli submit --platform android --profile production",
     "lint": "expo lint",
     "postinstall": "patch-package"
   },

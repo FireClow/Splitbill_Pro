@@ -33,7 +33,14 @@ Get-CimInstance Win32_Process -Filter "name='python.exe'" |
     }
 
 Get-CimInstance Win32_Process -Filter "name='node.exe'" |
-    Where-Object { $_.CommandLine -match 'expo start --web' -and $_.CommandLine -match [regex]::Escape($frontendDir) } |
+    Where-Object {
+        $_.CommandLine -match [regex]::Escape($frontendDir) -and
+        (
+            $_.CommandLine -match 'expo start --web' -or
+            $_.CommandLine -match 'expo\\bin\\cli" start --web' -or
+            $_.CommandLine -match 'expo\\bin\\cli start --web'
+        )
+    } |
     ForEach-Object {
         Stop-Process -Id $_.ProcessId -Force
         Write-Host "[Frontend] Stopped Expo PID $($_.ProcessId)" -ForegroundColor Green

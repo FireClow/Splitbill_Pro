@@ -34,10 +34,34 @@ from item_assignment import (
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
+
+def _get_required_env(name: str) -> str:
+    value = (os.environ.get(name) or "").strip()
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+def _get_allowed_origins() -> List[str]:
+    configured = (os.environ.get("ALLOWED_ORIGINS") or "").strip()
+    if configured:
+        parsed = [origin.strip() for origin in configured.split(",") if origin.strip()]
+        if parsed:
+            return parsed
+
+    return [
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
+        "http://localhost:8082",
+        "http://127.0.0.1:8082",
+        "http://localhost:19006",
+        "http://127.0.0.1:19006",
+    ]
+
 # MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+mongo_url = _get_required_env("MONGO_URL")
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[_get_required_env("DB_NAME")]
 
 async def initialize_database_indexes() -> None:
     await db.users.create_index("user_id", unique=True)
@@ -517,13 +541,9 @@ def calculate_splits(bill: dict, method: str = "equal", custom_splits: dict = No
         return calculate_splits(bill, "equal")
     return splits
 
-def normalize_item_payload(item: dict, valid_participant_ids: set) -> dict:
-    return normalize_item_payload_service(item, valid_participant_ids)
-
-
 def normalize_item_payload_or_http(item: dict, valid_participant_ids: set) -> dict:
     try:
-        return normalize_item_payload(item, valid_participant_ids)
+        return normalize_item_payload_service(item, valid_participant_ids)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -1843,14 +1863,7 @@ app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=[
-        "http://localhost:8081",
-        "http://127.0.0.1:8081",
-        "http://localhost:8082",
-        "http://127.0.0.1:8082",
-        "http://localhost:19006",
-        "http://127.0.0.1:19006",
-    ],
+    allow_origins=_get_allowed_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )

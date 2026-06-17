@@ -1,15 +1,18 @@
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Alert, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { api, removeToken } from '../../utils/api';
 import { Colors } from '../../utils/colors';
+import { MVP_FLAGS } from '../../constants/mvpFlags';
+import { LEGAL_LINKS } from '../../constants/legalLinks';
 
 interface MenuItem {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   sublabel: string;
   route?: string;
+  externalUrl?: string;
 }
 
 export default function ProfileScreen() {
@@ -36,37 +39,63 @@ export default function ProfileScreen() {
   };
 
   const menuItems: MenuItem[] = [
-    {
-      icon: 'globe-outline',
-      label: 'Currency Settings',
-      sublabel: 'Manage default currency',
-      route: '/settings',
-    },
-    {
-      icon: 'notifications-outline',
-      label: 'Notifications',
-      sublabel: 'Manage push notifications',
-    },
+    // TODO: Future feature (disabled for MVP)
+    ...(MVP_FLAGS.enableCurrencyConverter
+      ? [
+          {
+            icon: 'globe-outline' as const,
+            label: 'Currency Settings',
+            sublabel: 'Manage default currency',
+            route: '/settings',
+          },
+        ]
+      : []),
     {
       icon: 'shield-checkmark-outline',
-      label: 'Privacy & Security',
-      sublabel: 'Manage data & privacy',
-    },
-    {
-      icon: 'help-circle-outline',
-      label: 'Help & Support',
-      sublabel: 'FAQs and contact',
+      label: 'Privacy Policy',
+      sublabel: 'How your data is used',
+      externalUrl: LEGAL_LINKS.privacyPolicy,
     },
     {
       icon: 'document-text-outline',
       label: 'Terms of Service',
-      sublabel: 'Legal information',
+      sublabel: 'Read legal terms',
+      externalUrl: LEGAL_LINKS.termsOfService,
     },
+    // TODO: Future feature (disabled for MVP)
+    ...(MVP_FLAGS.enableAdvancedFinanceSuite
+      ? [
+          {
+            icon: 'notifications-outline' as const,
+            label: 'Notifications',
+            sublabel: 'Manage push notifications',
+          },
+          {
+            icon: 'help-circle-outline' as const,
+            label: 'Help & Support',
+            sublabel: 'FAQs and contact',
+          },
+        ]
+      : []),
   ];
 
-  const handleMenuItemPress = (item: MenuItem): void => {
+  const handleMenuItemPress = async (item: MenuItem): Promise<void> => {
     if (item.route) {
       router.push(item.route as never);
+      return;
+    }
+
+    if (item.externalUrl) {
+      try {
+        const supported = await Linking.canOpenURL(item.externalUrl);
+        if (!supported) {
+          Alert.alert('Unavailable', `${item.label} link is not available right now.`);
+          return;
+        }
+        await Linking.openURL(item.externalUrl);
+      } catch {
+        Alert.alert('Unavailable', `${item.label} link is not available right now.`);
+      }
     }
   };
 

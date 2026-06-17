@@ -15,6 +15,7 @@
 
 import { useEffect, useCallback, useRef } from 'react';
 import { getInterstitialAdManager, shouldShowAds } from '../utils/AdService';
+import { logger } from '../utils/logger';
 
 interface UseInterstitialAdReturn {
   trackBillCreation: () => Promise<void>;
@@ -40,14 +41,14 @@ export const useInterstitialAd = (isPremium: boolean = false): UseInterstitialAd
 
   const trackBillCreation = useCallback(async () => {
     if (!shouldShow) {
-      console.log('[useInterstitialAd] Ads disabled for this user');
+      logger.log('useInterstitialAd', 'Ads disabled for this user');
       return;
     }
 
     try {
       await managerRef.current.trackBillCreation();
     } catch (error) {
-      console.log('[useInterstitialAd] Error tracking bill creation:', error);
+      logger.warn('useInterstitialAd', 'Error tracking bill creation', error);
     }
   }, [shouldShow]);
 

@@ -1,6 +1,7 @@
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../utils/colors';
+import { MVP_FLAGS } from '../../constants/mvpFlags';
 
 export default function TabLayout() {
   return (
@@ -55,6 +56,8 @@ export default function TabLayout() {
         name="analytics"
         options={{
           title: 'Analytics',
+          // TODO: Future feature (disabled for MVP)
+          href: MVP_FLAGS.enableAnalytics ? '/analytics' : null,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="analytics-outline" size={size} color={color} />
           ),

@@ -30,6 +30,23 @@ function Test-PortOpen {
     }
 }
 
+function Wait-PortOpen {
+    param(
+        [int]$Port,
+        [int]$TimeoutSeconds = 45
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-PortOpen -Port $Port) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    return $false
+}
+
 if (-not (Test-Path $backendDir)) {
     throw "Backend folder not found: $backendDir"
 }
@@ -53,7 +70,9 @@ if (-not (Test-PortOpen -Port 8000)) {
     Write-Host '[Backend] Starting API server on 127.0.0.1:8000...' -ForegroundColor Cyan
     $backendProc = Start-Process -FilePath $backendVenvPython -ArgumentList '-m uvicorn server:app --host 127.0.0.1 --port 8000' -WorkingDirectory $backendDir -PassThru
     Set-Content -Path $backendPidFile -Value $backendProc.Id -NoNewline
-    Start-Sleep -Seconds 2
+    if (-not (Wait-PortOpen -Port 8000 -TimeoutSeconds 30)) {
+        Write-Host '[Backend] API server did not become ready within timeout.' -ForegroundColor Yellow
+    }
 }
 else {
     Write-Host '[Backend] Port 8000 is already active. Skipping start.' -ForegroundColor Green
@@ -74,7 +93,9 @@ if (-not (Test-PortOpen -Port 8081)) {
     Write-Host '[Frontend] Starting Expo web on 127.0.0.1:8081...' -ForegroundColor Cyan
     $frontendProc = Start-Process -FilePath 'npm.cmd' -ArgumentList 'run web' -WorkingDirectory $frontendDir -PassThru
     Set-Content -Path $frontendPidFile -Value $frontendProc.Id -NoNewline
-    Start-Sleep -Seconds 4
+    if (-not (Wait-PortOpen -Port 8081 -TimeoutSeconds 75)) {
+        Write-Host '[Frontend] Expo web did not become ready within timeout.' -ForegroundColor Yellow
+    }
 }
 else {
     Write-Host '[Frontend] Port 8081 is already active. Skipping start.' -ForegroundColor Green
